@@ -49,9 +49,9 @@ RUN DH_SKIP_BUILD=1 bash /tmp/dh_build_steps.sh /dh-src /tmp/schemas/mimicc_samp
 
 FROM python:3.11-slim
 
-# docker CLI is required so the server can spawn the enasequence/webin-cli
-# sibling container via the mounted docker socket (reads submission).
-RUN apt-get update && apt-get install -y docker.io curl && rm -rf /var/lib/apt/lists/*
+# git is needed for pip's pinned git+https sibling dependencies. No docker
+# CLI: reads upload runs in the user's read-helper-app, not here.
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
