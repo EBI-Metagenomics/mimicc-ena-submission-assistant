@@ -2,15 +2,20 @@
 
 Guidance for AI agents working in this repo. Read this before changing UI code.
 
+**There is no application server.** The app is a static site (`scripts/build_dist.py`
+→ `dist/`) whose Python runs in the browser (Pyodide). Do not add HTTP endpoints:
+new behaviour is a Python function called through `py()`/`enaPy()`, or plain JS. The
+`server/` directory name is historical. After editing `server/`, rebuild (`task serve`).
+
 ## Testing — this project HAS a Playwright + docker-compose test suite
 
 Do not re-invent it. It lives in `tests/` and runs via `task` (see `Taskfile.yml`):
 
-- `task test` — full pytest suite (API views + unit tests, no Docker). Run this
-  for any server-side change.
-- `task test:ui` — fast in-process Playwright UI suite (`tests/test_ui.py`):
-  a real WSGI server in a thread with `ena_service` mocked (`tests/conftest.py`
-  `live_server_url`). Use for anything that can be exercised without the real
+- `task test` — full pytest suite (Python unit tests + the UI suite, no Docker).
+  Run this for any Python or build change.
+- `task test:ui` — fast Playwright UI suite (`tests/test_ui.py`): `dist/` built
+  once per session and served in a thread (`tests/conftest.py` `live_server_url`),
+  with `py()` stubbed. Use for anything that can be exercised without the real
   DataHarmonizer bundle or the `dhtb` sidecar.
 - `task test:compose` — Playwright against the **real** `docker compose` stack
   (`tests/test_compose_ui.py`, gated on `COMPOSE_TEST=1`). Builds the image and

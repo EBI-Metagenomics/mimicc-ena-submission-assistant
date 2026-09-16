@@ -30,3 +30,5 @@ htmlcov/
 
 # Browser Python bundle — built by scripts/build_py_bundle.py (task build:py)
 server/static/py/app.zip
+# Static build output — scripts/build_dist.py (task build:dist)
+dist/

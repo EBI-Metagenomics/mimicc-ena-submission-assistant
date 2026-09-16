@@ -264,6 +264,9 @@ def test_sample_prepare_shows_python_errors(page):
 
 def test_iframe_loses_focus_on_outside_click(page):
     page.click("a.vf-tabs__link:has-text('Samples')")
+    # No DataHarmonizer bundle is built here, so config.json hides the grid;
+    # focus handling needs only the (empty) iframe on screen.
+    page.evaluate("() => { $('dhWrap').style.display = ''; $('dhMissing').style.display = 'none'; }")
     page.click("#dhFrame")
     assert page.evaluate("() => document.activeElement.id") == "dhFrame"
     page.click("#sampleFilter")
@@ -1330,7 +1333,7 @@ def test_schema_editor_follows_the_app_theme(page):
     # bridge with a faked dhtb.ready.
     page.click("a.vf-tabs__link:has-text('Schema')")
     page.evaluate("""async () => {
-      HEALTH.dhtb_url = '';  // accept the faked ready from this same-origin stub
+      CONFIG.dhtb_url = '';  // accept the faked ready from this same-origin stub
       const f = document.getElementById('schemaEditorFrame');
       f.src = 'about:blank';
       await new Promise((r) => { f.onload = r; });
@@ -1370,11 +1373,9 @@ _PYODIDE_MJS = "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide.mjs"
 
 
 @pytest.fixture(scope="session")
-def py_bundle():
-    """Build app.zip, and skip when Pyodide's CDN (or PyPI) is out of reach."""
-    import importlib.util
-    from pathlib import Path
-
+def pyodide_reachable():
+    """Skip when Pyodide's CDN (or PyPI) is out of reach. app.zip is already in
+    the built site (dist_dir)."""
     import httpx
 
     try:
@@ -1382,14 +1383,9 @@ def py_bundle():
         httpx.get("https://pypi.org/simple/linkml/", timeout=10).raise_for_status()
     except httpx.HTTPError as exc:
         pytest.skip(f"Pyodide CDN / PyPI unreachable: {exc}")
-    script = Path(__file__).resolve().parent.parent / "scripts" / "build_py_bundle.py"
-    spec = importlib.util.spec_from_file_location("build_py_bundle", script)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.build()
 
 
-def test_python_stack_runs_in_a_browser_worker(page, py_bundle):
+def test_python_stack_runs_in_a_browser_worker(page, pyodide_reachable):
     """The real submission stack loads in Pyodide and reaches ENA through the
     sync-XHR httpx transport, with Basic auth, from the worker."""
     _use_real_python(page)
@@ -1417,7 +1413,7 @@ def test_python_stack_runs_in_a_browser_worker(page, py_bundle):
     assert refused.startswith("refused: Not callable")
 
 
-def test_python_prepares_and_plans_in_a_browser_worker(page, py_bundle):
+def test_python_prepares_and_plans_in_a_browser_worker(page, pyodide_reachable):
     """Phase 3's calls against the real worker: the schema a call needs is
     fetched into Python's filesystem, linkml filters and renames in the
     browser, and a reads plan is built after an ENA lookup."""
@@ -1447,7 +1443,7 @@ def test_python_prepares_and_plans_in_a_browser_worker(page, py_bundle):
     samples, study_error, plan = page.evaluate(
         """async ({ exportJson, run }) => [
             await py('ena_service.prepare_sample_records',
-                     { dh_export: exportJson, where: HEALTH.default_sample_filter },
+                     { dh_export: exportJson, where: CONFIG.default_sample_filter },
                      { '/schemas/mimicc_sample.yaml': '/schemas/mimicc_sample.yaml' }),
             await py('ena_service.prepare_study_records', { dh_export: {}, dh_dir: '/dh' },
                      { '/dh/templates/study/schema.yaml': '/templates/study/schema.yaml' })
@@ -1480,7 +1476,7 @@ def test_py_rejects_when_the_worker_cannot_start(page):
     assert message.startswith("Python runtime failed to start")
 
 
-def test_python_submits_samples_from_a_browser_worker(page, py_bundle):
+def test_python_submits_samples_from_a_browser_worker(page, pyodide_reachable):
     """Phase 4 against the real worker: prepare, XSD-validate in the browser with
     the served XSDs, and POST the sample XML to Webin with Basic auth."""
     _use_real_python(page)
@@ -1521,7 +1517,7 @@ def test_python_submits_samples_from_a_browser_worker(page, py_bundle):
     result = page.evaluate(
         """async (exportJson) => {
             const prepared = await py('ena_service.prepare_sample_records',
-                { dh_export: exportJson, where: HEALTH.default_sample_filter }, servedFiles('/schemas/mimicc_sample.yaml'));
+                { dh_export: exportJson, where: CONFIG.default_sample_filter }, servedFiles('/schemas/mimicc_sample.yaml'));
             return enaPy('ena_service.submit_samples', { records: prepared.records, checklist: 'ERC000025' },
                 servedFiles('/assets/ena_schema/SRA.sample.xsd', '/assets/ena_schema/SRA.common.xsd',
                             '/schemas/mimicc_sample.yaml'));
@@ -1534,7 +1530,7 @@ def test_python_submits_samples_from_a_browser_worker(page, py_bundle):
     assert any("webin-v2/submit" in url for _, url in hits), hits
 
 
-def test_python_builds_and_compiles_schemas_in_a_browser_worker(page, py_bundle):
+def test_python_builds_and_compiles_schemas_in_a_browser_worker(page, pyodide_reachable):
     """Phase 5 against the real worker: name a schema, build one from an ENA
     checklist plus an uploaded file handed over as data, and compile it for a
     grid's fixed class."""

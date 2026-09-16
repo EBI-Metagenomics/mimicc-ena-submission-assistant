@@ -3,10 +3,9 @@ name = "mimicc-ena-submission-assistant"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    # Web app (single-user, local-only: no database, auth, or cache)
-    "Django>=5,<6",
-    "gunicorn",
-
+    # No application server: this Python builds the static site (scripts/) and
+    # runs in the browser (Pyodide). These are the dependencies of that Python
+    # and of its tests under CPython.
     # ena-submission-toolkit and standalone linkml-lib dependencies
     "httpx",
     "pydantic>=2",
@@ -61,7 +60,6 @@ python_version = "3.11"
 # that predate their markers.
 [[tool.mypy.overrides]]
 module = [
-    "django.*",
     "ena_api.*",
     "ena_submission_toolkit.*",
     "linkml.*",

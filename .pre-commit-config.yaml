@@ -47,7 +47,7 @@ repos:
         entry: uv run --frozen mypy
         language: system
         pass_filenames: false
-        args: ["server", "tests"]
+        args: ["server", "tests", "scripts"]
 
       # Runs on push (not every commit) since it is slower than the lint hooks
       # above.

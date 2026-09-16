@@ -2,8 +2,8 @@
 
 // ---------------------------------------------------------------------------
 // Credentials — held in the browser for this tab only (sessionStorage), never
-// persisted to disk and never sent to a server store; api() attaches them as
-// headers on each request (see core.js webinHeaders).
+// persisted to disk. They go to ENA from the Python worker (core.js enaPy) and,
+// when it runs, to the local read-helper-app.
 // ---------------------------------------------------------------------------
 const CREDS_KEY = "MIMICC_WEBIN_CREDS";
 
@@ -46,15 +46,15 @@ async function clearCreds() {
 async function pushCredsToHelper(username, password) {
   await helperApi("/api/credentials", { method: "POST", body: JSON.stringify({ username, password }) });
 }
-async function refreshHealth() {
-  HEALTH = await api("/api/health");
+async function applyConfig() {
+  CONFIG = await loadConfig();
   reflectCredStatus();
   // Seed the default sample filter only when empty (don't clobber a restored
-  // session value).
-  if (!$("sampleFilter").value) $("sampleFilter").value = HEALTH.default_sample_filter || "";
-  if (!HEALTH.dh_available) { $("dhWrap").style.display = "none"; $("dhMissing").style.display = "block"; }
+  // workspace value).
+  if (!$("sampleFilter").value) $("sampleFilter").value = CONFIG.default_sample_filter || "";
+  if (!CONFIG.dh_available) { $("dhWrap").style.display = "none"; $("dhMissing").style.display = "block"; }
   // Locate + probe the local reads upload helper.
-  if (HEALTH.helper_port) HELPER_BASE = `http://localhost:${HEALTH.helper_port}`;
+  if (CONFIG.helper_port) HELPER_BASE = `http://localhost:${CONFIG.helper_port}`;
   detectHelper();
 }
 

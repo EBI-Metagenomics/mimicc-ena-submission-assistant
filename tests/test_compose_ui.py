@@ -52,7 +52,7 @@ def compose_url():
         deadline = time.time() + 300  # image build included
         while time.time() < deadline:
             try:
-                if httpx.get(f"{url}/api/health", timeout=1).status_code == 200:
+                if httpx.get(f"{url}/config.json", timeout=1).status_code == 200:
                     break
             except Exception:
                 time.sleep(1)

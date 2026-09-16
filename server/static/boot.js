@@ -17,7 +17,7 @@ async function init() {
 async function startApp() {
   initTheme();               // stamp <html data-theme> before anything paints
   restoreCreds();            // pull Webin creds saved for this browser tab (if any)
-  await refreshHealth();
+  await applyConfig();       // config.json: helper port, dhtb URL, bundle availability
   templateWorkerReady();     // register sw.js early: it serves the grids' selected schemas
   requestPersistentStorage(); // keep the library + cached grid schemas from eviction
   initDhFrames();            // point both DH iframes at explicit ?template= paths

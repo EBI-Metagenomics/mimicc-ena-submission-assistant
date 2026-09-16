@@ -18,10 +18,11 @@ const envLabel = () => (TEST ? "TEST" : "PRODUCTION");
 const recEntity = () => $("recEntity").value;
 const recGrid = () => $("recGrid");
 
-/** Which fields this app knows how to MODIFY, per entity. The server is the
- *  source of truth — it is what builds the XML (see /api/health). */
+/** Which fields this app knows how to MODIFY, per entity. ena-submission-toolkit
+ *  is the source of truth — it builds the XML; build_dist.py copies its list
+ *  into config.json. */
 function editableFor(entity) {
-  return (HEALTH.editable_columns || {})[entity] || [];
+  return (CONFIG.editable_columns || {})[entity] || [];
 }
 
 function canEdit() {
@@ -349,8 +350,8 @@ async function loadRecords() {
 }
 
 // --- Submitting the change set ---------------------------------------------
-/** Change set rows -> what /api/records/modify wants, narrowed to editable
- *  fields. The server refuses anything else, but sending it would be a bug. */
+/** Change set rows -> what ena_service.modify_records wants, narrowed to editable
+ *  fields. The toolkit refuses anything else, but sending it would be a bug. */
 function pendingChanges() {
   const allowed = new Set(editableColumnsNow());
   return recGrid()

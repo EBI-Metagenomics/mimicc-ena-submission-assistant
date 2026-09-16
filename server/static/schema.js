@@ -368,7 +368,7 @@ function initSchemaEditorFrame() {
   // keep it pinned to this page's data-theme (and to any later change).
   new MutationObserver(syncDhtbTheme).observe(document.documentElement,
     { attributes: true, attributeFilter: ["data-theme"] });
-  const url = HEALTH.dhtb_url;
+  const url = CONFIG.dhtb_url;
   if (!url) { $("schemaEditorMissing").style.display = "block"; return; }
   $("schemaEditorFrame").src = url;
 }
@@ -393,7 +393,7 @@ function postToDhtb(type, payload) {
 }
 
 window.addEventListener("message", (ev) => {
-  if (HEALTH.dhtb_url && ev.origin !== new URL(HEALTH.dhtb_url).origin) return;
+  if (CONFIG.dhtb_url && ev.origin !== new URL(CONFIG.dhtb_url).origin) return;
   const msg = ev.data;
   if (!msg || typeof msg !== "object") return;
   if (msg.type === "dhtb.ready") {

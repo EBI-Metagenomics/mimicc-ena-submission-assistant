@@ -4,7 +4,7 @@
 // Global state + helpers
 // ---------------------------------------------------------------------------
 let TEST = true;            // ENA test vs production
-let HEALTH = {};
+let CONFIG = {};           // config.json — see loadConfig()
 let RUN_ROWS = [];          // editable run records for the Reads tab
 let READ_SAMPLES = [];      // ENA samples available for read assignment
 let SELECTED_SAMPLE = "";   // selected sample accession for click assignment
@@ -24,16 +24,13 @@ let READS_MODE_CHOSEN = false;
 // to this app's own server.
 let CREDS = { username: "", password: "" };
 
-async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...opts,
-  });
-  const text = await res.text();
-  let body;
-  try { body = text ? JSON.parse(text) : {}; } catch { body = { detail: text }; }
-  if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
-  return body;
+/** Deployment configuration: config.json, written by scripts/build_dist.py
+ *  (helper port, dhtb URL, and what the build found — the DataHarmonizer
+ *  bundle, the ena-browser element, the editable columns per entity). */
+async function loadConfig() {
+  const res = await fetch("/config.json", { cache: "no-store" });
+  if (!res.ok) throw new Error(`config.json unavailable (HTTP ${res.status}) — build the site with scripts/build_dist.py.`);
+  return res.json();
 }
 
 // Call the app's Python in the browser (static/py/worker.js): `target` is
