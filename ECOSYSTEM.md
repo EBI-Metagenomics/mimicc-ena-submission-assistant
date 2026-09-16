@@ -135,7 +135,8 @@ persistent state lives in the browser.
   `server/static/dh/`; `ena-browser` is vendored under `server/static/vendor/`.
 - **Schema artifacts** committed in the repo: `schemas/*.yaml` (LinkML) and
   `assets/ena_schema/` (ENA/SRA XSDs and checklist XMLs). User-saved schemas live in
-  the `mimicc-schemas` volume.
+  the browser (IndexedDB); the grids' compiled schemas in Cache Storage, served
+  by a service worker.
 - **Pinned sibling libraries** (in `pyproject.toml`, no submodules):
   `ena-api-client @ ...@v0.1.0`, `linkml-lib @ ...@v0.1.0`,
   `ena-submission-toolkit @ ...@v0.1.0`.
@@ -368,7 +369,7 @@ and edits* schemas interactively (React + TS pays for itself).
 - **Data flows over four channels:** Python imports (assistant and dhtb ↔ libraries),
   HTTP/JSON (browser ↔ assistant server, browser ↔ read-helper-app, assistant server
   and read-helper-app ↔ ENA), `postMessage` (assistant page ↔ dhtb iframe), and shared
-  Docker volumes (the built DH bundle and the schema library).
+  a Docker volume (the built DH bundle).
 
 ```
 ena-api-client ──┐
@@ -392,7 +393,7 @@ separate tier from the browser and from read-helper-app.
 
 | Project | Server (Docker containers) | Browser | read-helper-app (native, user's machine) |
 |---|---|---|---|
-| **mimicc-ena-submission-assistant** | Django views: prepare/submit, records list/modify/actions, reads group/suggest/plan/result, schema library, static + `/dh` serving | SPA; workspace in IndexedDB; credentials in sessionStorage, sent as headers per request; orchestrates reads upload between server and helper, or renders it as a `webin-cli` script | — |
+| **mimicc-ena-submission-assistant** | Static + `/dh`, `/schemas`, `/assets/ena_schema` serving and `/api/health` | SPA; workspace and schema library in IndexedDB, grid schemas in Cache Storage (service worker); credentials in sessionStorage; all ENA calls, prepare/submit, records, reads plan and schema import/compile in a Pyodide worker; orchestrates reads upload with the helper, or renders it as a `webin-cli` script | — |
 | **ena-api-client** | All Webin Submission/Reports API calls | — | — |
 | **ena-submission-toolkit** | XML builders, XSD validation, records, DH-export prep | — | — |
 | **linkml-lib** | Schema compile/IO in the assistant and in dhtb | — | — |

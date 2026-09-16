@@ -284,6 +284,20 @@ def test_schema_selection_reloads_real_dh_iframes_without_toolbar_error(page):
 
     assert not [message for message in errors if "getColumnCoordinates" in message]
 
+    # The selections live in this browser (Cache Storage, served by sw.js), so a
+    # reload shows them again with no select step and no recompile.
+    page.reload()
+    page.wait_for_function("() => window.WORKSPACE_READY === true")
+    assert page.evaluate("async () => await window.GRID_SCHEMAS_RESTORED") == []
+    served = page.evaluate(
+        """async () => Object.fromEntries(await Promise.all(['mimicc', 'mimicc_experiment', 'study'].map(
+            async (folder) => [folder, (await fetch(`/templates/${folder}/schema.json`)).headers.get('x-schema-id')]
+        )))"""
+    )
+    assert served == {"mimicc": "mimicc_experiment", "mimicc_experiment": "mimicc_sample", "study": "sra_study"}
+    page.click("a.vf-tabs__link:has-text('Samples')")
+    _wait_for_dh_iframe_ready(page, "#dhFrame")
+
 
 def test_study_grid_auto_loads_on_startup(page):
     # initDhFrames() points the study frame at study/<registry.study> on load,

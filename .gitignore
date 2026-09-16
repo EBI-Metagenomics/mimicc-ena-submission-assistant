@@ -2,13 +2,13 @@
 __pycache__/
 *.pyc
 server/static/dh/
+
+# Old local-dev schema library (before the library moved into the browser) —
+# may still hold schemas you saved; import them via the Schema tab's file picker.
+.local/
 .env
 .DS_Store
 
-# Local-dev fallback for the schema library when SCHEMAS_CONTAINER_DIR isn't
-# set (see server/_bootstrap.py:schemas_dir) — production uses the /schemas
-# bind mount instead.
-.local/
 
 # SQLite fallback DB (used when DATABASE_URL is unset — tests + lightweight local).
 .data/

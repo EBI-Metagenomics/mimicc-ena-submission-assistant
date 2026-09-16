@@ -8,6 +8,7 @@ Playwright (and its browsers) are not installed.
 from __future__ import annotations
 
 import json
+import pathlib
 
 import pytest
 
@@ -1152,6 +1153,176 @@ def test_ena_browser_element_registered(page, live_server_url):
     assert page.evaluate("() => !!window.customElements.get('ena-browser')")
 
 
+# ---------------------------------------------------------------------------
+# Schema library + grid schemas (browser-side) — STATIC_BROWSER_PLAN.md Phase 5
+# ---------------------------------------------------------------------------
+
+_REGISTRY = {"mimicc": "MIMICC_Sample", "mimicc_experiment": "MIMICC_Experiment", "study": "SRA_study"}
+# (role, dropdown, folder) — the three grids are parallel.
+_GRIDS = [
+    ("sample", "sampleSchemaSelect", "mimicc"),
+    ("experiment", "expSchemaSelect", "mimicc_experiment"),
+    ("study", "studySchemaSelect", "study"),
+]
+
+
+def _compiled(role, folder, marker):
+    return {
+        "role": role,
+        "folder": folder,
+        "template_name": _REGISTRY[folder],
+        "template": f"{folder}/{_REGISTRY[folder]}",
+        "schema_json": {"name": marker, "classes": {_REGISTRY[folder]: {"name": _REGISTRY[folder]}}},
+        "diagnostics": [],
+    }
+
+
+def _prepare_grid_selection(page, role, folder, marker="custom"):
+    """No DataHarmonizer bundle here: serve its registry, skip waiting for the
+    grid to render, and stub the compile."""
+    page.route(
+        "**/dh/dh-template-registry.json*",
+        lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps(_REGISTRY)),
+    )
+    page.evaluate("() => { waitForDhFrameReady = async () => {}; }")
+    _stub_py(page, {"schema_service.compile_for_grid": _compiled(role, folder, marker)})
+
+
+def _served_schema(page, folder):
+    """What DataHarmonizer would get for the grid — through the service worker."""
+    return page.evaluate(
+        """async (folder) => {
+            await templateWorkerReady();
+            const res = await fetch(`/templates/${folder}/schema.json`);
+            return { status: res.status, schemaId: res.headers.get('x-schema-id'),
+                     body: res.ok ? await res.text() : null };
+        }""",
+        folder,
+    )
+
+
+def test_schema_library_seeds_from_the_bundled_index_without_python(page):
+    page.click("a.vf-tabs__link:has-text('Schema')")
+    page.wait_for_selector("#sampleSchemaSelect option[value='mimicc_sample']", state="attached")
+    ids = page.evaluate("async () => (await listLibrarySchemas()).map((s) => s.id)")
+    assert {"mimicc_sample", "mimicc_experiment", "sra_study"} <= set(ids)
+    assert page.evaluate("async () => (await readLibrarySchema('sra_study')).yaml").startswith(("id:", "name:", "#"))
+    assert page.evaluate("() => window.__pyCalls.length") == 0
+
+
+@pytest.mark.parametrize(("role", "select_id", "folder"), _GRIDS)
+def test_selected_grid_schema_survives_a_reload_without_recompiling(page, role, select_id, folder):
+    _prepare_grid_selection(page, role, folder)
+    page.evaluate("([role]) => selectSchemaById(role, 'mimicc_sample')", [role])
+
+    (call,) = _py_calls(page, "schema_service.compile_for_grid")
+    assert call["kwargs"]["role"] == role
+    assert "MIMICC" in call["kwargs"]["yaml_text"] or "mimicc" in call["kwargs"]["yaml_text"]
+    served = _served_schema(page, folder)
+    assert served["schemaId"] == "mimicc_sample" and '"custom"' in served["body"]
+    assert page.evaluate("async () => await dbGetGridSchemas()") == {role: "mimicc_sample"}
+
+    page.reload()
+    _wait_for_workspace(page)
+    # Nothing was stale, so nothing was recompiled — no Python on a returning load.
+    assert page.evaluate("async () => await window.GRID_SCHEMAS_RESTORED") == []
+    assert '"custom"' in _served_schema(page, folder)["body"]
+
+
+@pytest.mark.parametrize(("role", "select_id", "folder"), _GRIDS)
+def test_deleting_the_selected_schema_reverts_the_grid_to_its_default(page, role, select_id, folder):
+    _prepare_grid_selection(page, role, folder)
+    page.evaluate("([role]) => selectSchemaById(role, 'erc000025')", [role])
+    assert _served_schema(page, folder)["schemaId"] == "erc000025"
+
+    page.on("dialog", lambda dialog: dialog.accept())
+    page.evaluate("() => deleteSchemaFromLibrary('erc000025')")
+
+    # Falls through to the bundle, which this environment does not have.
+    assert _served_schema(page, folder)["schemaId"] is None
+    assert page.evaluate("async () => await dbGetGridSchemas()") == {}
+    assert "erc000025" not in page.evaluate("async () => (await listLibrarySchemas()).map((s) => s.id)")
+
+
+def test_stale_grid_schema_is_recompiled_on_restore(page):
+    _prepare_grid_selection(page, "sample", "mimicc", marker="old compiler")
+    page.evaluate("() => selectSchemaById('sample', 'mimicc_sample')")
+    # Re-tag the cached entry as made by another compiler version.
+    page.evaluate(
+        """async () => {
+            const cache = await caches.open('dh-templates');
+            const old = await cache.match('/templates/mimicc/schema.json');
+            const headers = new Headers(old.headers);
+            headers.set('x-compiler-version', 'linkml-runtime==0.0.1');
+            await cache.put('/templates/mimicc/schema.json', new Response(await old.text(), { headers }));
+        }"""
+    )
+    _stub_py(page, {"schema_service.compile_for_grid": _compiled("sample", "mimicc", "new compiler")})
+
+    assert page.evaluate("async () => await restoreGridSchemas()") == ["sample"]
+    assert '"new compiler"' in _served_schema(page, "mimicc")["body"]
+    # Current again: a second restore leaves it alone.
+    assert page.evaluate("async () => await restoreGridSchemas()") == []
+
+
+def test_restore_drops_a_cached_schema_the_workspace_no_longer_selects(page):
+    _prepare_grid_selection(page, "study", "study")
+    page.evaluate("() => selectSchemaById('study', 'sra_study')")
+    page.evaluate("async () => { await dbSetGridSchema('study', null); }")  # as Clear leaves it
+
+    assert page.evaluate("async () => await restoreGridSchemas()") == ["study"]
+    assert _served_schema(page, "study")["schemaId"] is None
+
+
+def test_saving_a_schema_names_it_in_python_and_stores_it(page):
+    yaml_text = "name: my_schema\nid: https://example.org/my_schema\nclasses: {}\n"
+    _stub_py(
+        page,
+        {
+            "schema_service.describe_schema": {
+                "id": "my-schema",
+                "name": "my_schema",
+                "title": "my_schema",
+                "description": None,
+            }
+        },
+    )
+    schema_id = page.evaluate("([name, text]) => saveLibrarySchema(name, text)", ["My Schema", yaml_text])
+    assert schema_id == "my-schema"
+    assert page.evaluate("async () => (await readLibrarySchema('my-schema')).yaml") == yaml_text
+    (call,) = _py_calls(page, "schema_service.describe_schema")
+    assert call["kwargs"] == {"yaml_text": yaml_text, "name": "My Schema"}
+
+
+def test_building_a_schema_sends_sources_and_library_schemas_as_files(page):
+    _stub_py(page, {"schema_service.import_build": "name: merged\n"})
+    page.evaluate("() => { loadSchemaIntoEditor = (yaml) => { window.__editorYaml = yaml; }; }")
+    page.click("a.vf-tabs__link:has-text('Schema')")
+    page.wait_for_selector("#schemaImportChecklists option[value='ERC000025.xml']", state="attached")
+    page.wait_for_selector("#schemaImportExisting option[value='sra_study']", state="attached")
+    page.select_option("#schemaImportChecklists", "ERC000025.xml")
+    page.select_option("#schemaImportExisting", "sra_study")
+    page.evaluate("() => buildImportedSchema()")
+
+    (call,) = _py_calls(page, "schema_service.import_build")
+    assert call["kwargs"]["source_ids"] == ["ERC000025.xml"]
+    assert call["kwargs"]["upload_paths"] == ["/tmp/library/sra_study.yaml"]
+    assert call["files"]["/assets/ena_schema/ERC000025.xml"] == "/assets/ena_schema/ERC000025.xml"
+    assert "/assets/ena_schema/SRA.common.xsd" in call["files"]
+    assert call["files"]["/tmp/library/sra_study.yaml"]["data"].startswith(("id:", "name:", "#"))
+    assert page.evaluate("() => window.__editorYaml") == "name: merged\n"
+
+
+def test_workspace_download_carries_the_schema_library_and_grid_schemas(page):
+    _prepare_grid_selection(page, "sample", "mimicc")
+    page.evaluate("() => selectSchemaById('sample', 'mimicc_sample')")
+    with page.expect_download() as download:
+        page.click("#workspaceChip button:has-text('Download')")
+    saved = json.loads(pathlib.Path(download.value.path()).read_text())
+    assert saved["grid_schemas"] == {"sample": "mimicc_sample"}
+    assert "mimicc_sample" in {schema["id"] for schema in saved["schemas"]}
+
+
 def test_schema_editor_follows_the_app_theme(page):
     # dhtb follows the OS colour scheme on its own; the app pins it to its own
     # data-theme on ready and on every later change. The sidecar isn't running
@@ -1361,3 +1532,28 @@ def test_python_submits_samples_from_a_browser_worker(page, py_bundle):
     assert result["success"], result.get("logs")
     assert [a["accession"] for a in result["accessions"]] == ["ERS999"]
     assert any("webin-v2/submit" in url for _, url in hits), hits
+
+
+def test_python_builds_and_compiles_schemas_in_a_browser_worker(page, py_bundle):
+    """Phase 5 against the real worker: name a schema, build one from an ENA
+    checklist plus an uploaded file handed over as data, and compile it for a
+    grid's fixed class."""
+    _use_real_python(page)
+    described, built, compiled = page.evaluate(
+        """async () => {
+            const upload = new TextEncoder().encode('name: seed\\nid: https://example.org/seed\\nclasses: {}\\nslots: {}\\n');
+            const built = await py('schema_service.import_build',
+                { source_ids: ['ERC000025.xml'], upload_paths: ['/tmp/upload/seed.yaml'], name: 'merged' },
+                { ...enaSourceFiles(['ERC000025.xml']), '/tmp/upload/seed.yaml': { data: upload } });
+            return [
+                await py('schema_service.describe_schema', { yaml_text: built, name: 'My Merged' }),
+                built,
+                await py('schema_service.compile_for_grid',
+                         { role: 'sample', yaml_text: (await readLibrarySchema('mimicc_sample')).yaml }),
+            ];
+        }"""
+    )
+    assert described["id"] == "my-merged"
+    assert "slots:" in built
+    assert compiled["template"] == "mimicc/MIMICC_Sample"
+    assert "MIMICC_Sample" in compiled["schema_json"]["classes"]

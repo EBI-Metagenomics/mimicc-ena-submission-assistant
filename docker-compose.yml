@@ -20,18 +20,16 @@ services:
     volumes:
       # NB: the app doesn't mount the host Docker socket, the whole host
       # (/hostroot) or a reads workspace — reads upload happens on the user's
-      # machine via the read-helper-app, and sessions live in the browser.
+      # machine via the read-helper-app, and the workspace and schema library live
+      # in the browser.
       #
       # Built DataHarmonizer bundle, served at /dh. Bind-mounted (rather than
       # baked into the image) so it can be updated in place; seeded from the
       # image's build-time bundle on first run (scripts/server_entrypoint.sh).
       - ${MIMICC_DH_BUNDLE_DIR:-mimicc-dh-bundle}:/app/server/static/dh
-      # Schema library: saved/imported LinkML schemas backing the grids.
-      - ${MIMICC_SCHEMAS_DIR:-mimicc-schemas}:/schemas
     environment:
       # Loopback port the browser expects the local read-helper-app on.
       - HELPER_PORT=${HELPER_PORT:-9100}
-      - SCHEMAS_CONTAINER_DIR=/schemas
       # Browser-reachable URL of the dhtb sidecar (the browser talks to it
       # directly, not through this container) — see /api/health: dhtb_url.
       - DHTB_URL=http://127.0.0.1:${MIMICC_DHTB_PORT:-8765}
@@ -39,7 +37,7 @@ services:
 
 
   # DataHarmonizer Template Builder: edit/preview LinkML schemas before
-  # selecting them via /api/schemas/select. Sibling service the main app
+  # selecting them for a grid. Sibling service the main app
   # embeds as an iframe (postMessage bridge); see server/static/app.js.
   dhtb:
     # See mimicc-server's platform comment above.
@@ -60,4 +58,3 @@ services:
 
 volumes:
   mimicc-dh-bundle:
-  mimicc-schemas:

@@ -45,7 +45,10 @@ master table: clicking a row-action button, and reading a custom column's badge
 Each submission role is bound to a **fixed** DH template folder
 (`server/schema_service.py` `ROLE_FOLDERS`): sample→`mimicc`,
 experiment→`mimicc_experiment`, study→`study`. Selecting a schema from a tab's
-dropdown compiles it *into* that folder (`/api/schemas/select`) and reloads the
-grid — the folder must already exist in the built bundle. New role or new fixed
+dropdown compiles it in the browser's Python and caches it at that folder's
+`/templates/<folder>/schema.json`, where the service worker (`static/sw.js`)
+serves it over the bundle's default, then reloads the grid — the folder must
+already exist in the built bundle. Anything that changes compiled output means
+bumping `COMPILER_VERSION` in `static/py/versions.js`. New role or new fixed
 folder ⇒ add a build step to the `Dockerfile` dh-builder stage AND a startup
 branch in `server/static/dataharmonizer.js` `initDhFrames()`.

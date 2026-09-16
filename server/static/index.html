@@ -185,6 +185,8 @@
         <button class="icon-btn" type="button" onclick="downloadWorkspace()">Download</button>
         <label class="icon-btn" style="margin:0">Import…<input type="file" id="workspaceImportFile" accept="application/json,.json" onchange="importWorkspace()" style="display:none"></label>
         <button class="icon-btn danger" type="button" onclick="clearWorkspace()" title="Start over with an empty workspace">Clear</button>
+        <span class="muted" id="storageWarning" hidden
+              title="The browser did not grant persistent storage, so it may clear your workspace and schema library under storage pressure.">⚠ may be evicted — Download to back up</span>
       </span>
       <span class="creds-status" id="credStatus">credentials: not set</span>
       <span class="vf-badge vf-badge--primary" id="envPill">TEST</span>

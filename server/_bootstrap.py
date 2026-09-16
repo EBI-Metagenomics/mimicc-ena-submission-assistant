@@ -8,10 +8,12 @@ without any ``sys.path`` setup.
 What's left is locating the non-Python assets that ship alongside them: the
 MIMICC LinkML schemas (``schemas/``) and the ENA/SRA XSDs/checklists
 (``assets/ena_schema/``) — both committed directly in this repo. Override
-with ``ENA_DH_SCHEMA`` / ``ENA_DH_XSD`` / ``ENA_DH_SCHEMAS_DIR`` if needed.
+with ``ENA_DH_SCHEMA`` / ``ENA_DH_XSD`` if needed. In the browser (Pyodide) the
+same paths resolve under ``/``, where the page fetches the files a call reads.
 
-The resolved paths are exposed via ``schema_path()`` / ``xsd_dir()`` /
-``vendor_schemas_dir()``, which raise only when actually needed.
+The resolved paths are exposed via ``schema_path()`` / ``xsd_dir()``, which
+raise only when actually needed. The schema library is not here: it lives in
+the browser (IndexedDB, ``static/schema.js``).
 """
 
 from __future__ import annotations
@@ -55,29 +57,3 @@ def xsd_dir() -> Path:
     if found is None:
         raise RuntimeError("Could not locate the ENA XSD directory. Set ENA_DH_XSD to override.")
     return found
-
-
-def vendor_schemas_dir() -> Path:
-    """The bundled LinkML schemas shipped with the app (read-only) — used to
-    seed the writable schema library on first run."""
-    found = _first_existing(
-        _env_path("ENA_DH_SCHEMAS_DIR"),
-        _REPO_ROOT / "schemas",
-    )
-    if found is None:
-        raise RuntimeError("Could not locate the bundled schemas directory.")
-    return found
-
-
-def schemas_dir() -> Path:
-    """Writable directory holding the user's saved/imported LinkML schemas
-    (the schema "library"). Persisted via a Docker volume in production
-    (``/schemas``, see docker-compose.yml); falls back to a repo-local
-    directory for non-Docker development."""
-    configured = _env_path("SCHEMAS_CONTAINER_DIR")
-    if configured is not None:
-        configured.mkdir(parents=True, exist_ok=True)
-        return configured
-    default = _REPO_ROOT / ".local" / "schemas"
-    default.mkdir(parents=True, exist_ok=True)
-    return default

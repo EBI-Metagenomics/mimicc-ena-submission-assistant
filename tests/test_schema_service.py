@@ -1,13 +1,15 @@
 """Unit tests for server/schema_service.py.
 
-Exercises the schema library (list/save/delete), the ENA XML/XSD import
-pipeline, and the in-process compile that backs schema selection for the
-sample/experiment DataHarmonizer grids. Skipped automatically when the heavy
-``linkml`` dependency is unavailable.
+Exercises what the browser's schema library calls through ``py()``: naming a
+schema for the library, the ENA XML/XSD import pipeline, and the compile that
+backs schema selection for the DataHarmonizer grids — plus the committed
+indexes the page reads instead of listing directories. Skipped automatically
+when the heavy ``linkml`` dependency is unavailable.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import pathlib
 
@@ -17,47 +19,54 @@ pytest.importorskip("linkml")
 
 import schema_service  # noqa: E402
 
-
-@pytest.fixture(autouse=True)
-def isolated_schemas_dir(tmp_path, monkeypatch):
-    """Point the schema library at a throwaway directory for every test."""
-    monkeypatch.setattr("_bootstrap.schemas_dir", lambda: tmp_path)
-    yield tmp_path
+_REPO = pathlib.Path(__file__).resolve().parent.parent
 
 
-def test_list_schemas_seeds_from_bundled_defaults():
-    schemas = schema_service.list_schemas()
-    ids = {s["id"] for s in schemas}
-    assert "mimicc_sample" in ids
-    assert "mimicc_experiment" in ids
+def _bundled(name: str) -> str:
+    return (_REPO / "schemas" / f"{name}.yaml").read_text(encoding="utf-8")
 
 
-def test_every_listed_schema_id_is_readable():
-    # Regression: list_schemas reports id == path.stem, but read/select resolve
-    # via _schema_path (which slugifies/lower-cases). Upper-case-named bundled
-    # schemas (SRA_study.yaml, ENA_project.yaml, ERC*.yaml) were listed with an
-    # id that read_schema then 404'd on, so they couldn't be selected in any
-    # DataHarmonizer dropdown. Every listed id must round-trip.
-    for s in schema_service.list_schemas():
-        assert schema_service.read_schema(s["id"]), f"listed id not readable: {s['id']}"
-    # And the study schema specifically must be present + selectable-by-id.
-    assert "sra_study" in {s["id"] for s in schema_service.list_schemas()}
+def test_describe_schema_names_a_library_entry():
+    yaml_text = "name: my_schema\nid: https://example.org/my_schema\ntitle: Mine\nclasses: {}\n"
+    assert schema_service.describe_schema(yaml_text, "My Schema!") == {
+        "id": "my-schema",  # slugified
+        "name": "my_schema",
+        "title": "Mine",
+        "description": None,
+    }
+    # A blank name falls back to the schema's own.
+    assert schema_service.describe_schema(yaml_text)["id"] == "my_schema"
 
 
-def test_save_read_delete_round_trip():
-    yaml_text = "name: my_schema\nid: https://example.org/my_schema\nclasses: {}\n"
-    schema_id = schema_service.save_schema("My Schema!", yaml_text)
-    assert schema_id == "my-schema"  # slugified
-    assert schema_service.read_schema(schema_id) == yaml_text
-
-    schema_service.delete_schema(schema_id)
+@pytest.mark.parametrize("yaml_text", ["not: [a, mapping, root: oops", "- just\n- a list\n"])
+def test_describe_schema_rejects_invalid_yaml(yaml_text):
     with pytest.raises(ValueError):
-        schema_service.read_schema(schema_id)
+        schema_service.describe_schema(yaml_text, "bad")
 
 
-def test_save_rejects_invalid_yaml():
-    with pytest.raises(ValueError):
-        schema_service.save_schema("bad", "not: [a, mapping, root: oops")
+def _load_index_builder():
+    spec = importlib.util.spec_from_file_location("build_static_indexes", _REPO / "scripts" / "build_static_indexes.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_committed_indexes_match_the_files():
+    """The page lists schemas/ and assets/ena_schema/ from these; a static host
+    cannot list a directory. Run scripts/build_static_indexes.py to fix."""
+    builder = _load_index_builder()
+    assert builder.SCHEMAS_INDEX.read_text() == builder.render(builder.schemas_index())
+    assert builder.ENA_SOURCES_INDEX.read_text() == builder.render(schema_service.list_ena_sources())
+
+
+def test_every_bundled_schema_id_is_its_slug():
+    # Regression: upper-case-named bundled schemas (SRA_study.yaml, ERC*.yaml)
+    # were once listed under an id that lookup then missed, so they could not
+    # be selected in any grid dropdown.
+    ids = {entry["id"] for entry in json.loads((_REPO / "schemas" / "index.json").read_text())}
+    assert {"mimicc_sample", "mimicc_experiment", "sra_study"} <= ids
+    assert all(entry_id == schema_service._slugify(entry_id) for entry_id in ids)
 
 
 def test_list_ena_sources_includes_top_level_and_checklists_subdir():
@@ -108,43 +117,23 @@ def test_import_build_raises_without_any_inputs():
         schema_service.import_build()
 
 
-def test_import_build_can_include_an_existing_saved_schema():
-    schema_service.save_schema("seed", "name: seed\nid: https://example.org/seed\nclasses: {}\nslots: {}\n")
-    yaml_text = schema_service.import_build(source_ids=["ERC000025.xml"], schema_ids=["seed"])
-    assert yaml_text
+def test_import_build_can_include_a_saved_schema_file(tmp_path):
+    saved = tmp_path / "seed.yaml"
+    saved.write_text("name: seed\nid: https://example.org/seed\nclasses: {}\nslots: {}\n")
+    assert schema_service.import_build(source_ids=["ERC000025.xml"], upload_paths=[saved])
 
 
-def test_select_for_grid_writes_schema_json_and_registry(tmp_path):
-    dh_dir = tmp_path / "dh"
-    yaml_text = schema_service.read_schema("mimicc_sample")
-
-    template = schema_service.select_for_grid("sample", yaml_text, dh_dir=dh_dir)
-
-    assert template == "mimicc/MIMICC_Sample"
-    schema_json_path = dh_dir / "templates" / "mimicc" / "schema.json"
-    assert schema_json_path.exists()
-    compiled = json.loads(schema_json_path.read_text())
-    assert compiled["name"]
-    assert (dh_dir / "templates" / "mimicc" / "export.js").exists()
-
-    registry = json.loads((dh_dir / "dh-template-registry.json").read_text())
-    assert registry["mimicc"] == "MIMICC_Sample"
-
-
-def test_select_for_grid_result_includes_logs(tmp_path):
-    result = schema_service.select_for_grid_result(
-        "sample",
-        schema_service.read_schema("mimicc_sample"),
-        dh_dir=tmp_path / "dh",
-    )
+def test_compile_for_grid_targets_the_roles_fixed_folder():
+    result = schema_service.compile_for_grid("sample", _bundled("mimicc_sample"))
 
     assert result["template"] == "mimicc/MIMICC_Sample"
-    assert result["role"] == "sample"
-    assert result["logs"]
+    assert (result["role"], result["folder"]) == ("sample", "mimicc")
+    assert result["schema_json"]["name"]
+    assert "MIMICC_Sample" in result["schema_json"]["classes"]
+    json.dumps(result)  # crosses to the page as JSON
 
 
-def test_select_for_grid_adapts_renderable_class_to_fixed_role_template(tmp_path):
-    dh_dir = tmp_path / "dh"
+def test_compile_for_grid_adapts_renderable_class_to_fixed_role_template():
     yaml_text = """
 name: merged_schema
 id: https://example.org/merged_schema
@@ -159,46 +148,27 @@ slots:
   alias:
     title: Alias
 """
+    result = schema_service.compile_for_grid("sample", yaml_text)
 
-    template = schema_service.select_for_grid("sample", yaml_text, dh_dir=dh_dir)
-
-    assert template == "mimicc/MIMICC_Sample"
-    schema_json = json.loads((dh_dir / "templates" / "mimicc" / "schema.json").read_text())
-    assert "MIMICC_Sample" in schema_json["classes"]
-    assert "RenderableTable" not in schema_json["classes"]
-    registry = json.loads((dh_dir / "dh-template-registry.json").read_text())
-    assert registry["mimicc"] == "MIMICC_Sample"
+    assert result["template"] == "mimicc/MIMICC_Sample"
+    assert "MIMICC_Sample" in result["schema_json"]["classes"]
+    assert "RenderableTable" not in result["schema_json"]["classes"]
+    assert result["diagnostics"]
 
 
-def test_select_for_grid_rejects_schema_without_renderable_classes(tmp_path):
+def test_compile_for_grid_rejects_schema_without_renderable_classes():
     with pytest.raises(ValueError, match="no renderable classes"):
-        schema_service.select_for_grid(
-            "sample",
-            "name: classless\nid: https://example.org/classless\nclasses: {}\n",
-            dh_dir=tmp_path / "dh",
-        )
+        schema_service.compile_for_grid("sample", "name: classless\nid: https://example.org/classless\nclasses: {}\n")
 
 
-def test_select_for_grid_preserves_existing_export_js(tmp_path):
-    dh_dir = tmp_path / "dh"
-    tpl_dir = dh_dir / "templates" / "mimicc"
-    tpl_dir.mkdir(parents=True)
-    (tpl_dir / "export.js").write_text("export default { custom: true };\n")
-
-    schema_service.select_for_grid("sample", schema_service.read_schema("mimicc_sample"), dh_dir=dh_dir)
-
-    assert "custom" in (tpl_dir / "export.js").read_text()
+def test_compile_for_grid_rejects_unknown_role():
+    with pytest.raises(ValueError, match="Unknown role"):
+        schema_service.compile_for_grid("bogus", "name: x\n")
 
 
-def test_select_for_grid_rejects_unknown_role(tmp_path):
-    with pytest.raises(ValueError):
-        schema_service.select_for_grid("bogus", "name: x\n", dh_dir=tmp_path / "dh")
-
-
-def test_select_for_grid_for_experiment_role_uses_its_own_folder(tmp_path):
-    dh_dir = tmp_path / "dh"
-    template = schema_service.select_for_grid(
-        "experiment", schema_service.read_schema("mimicc_experiment"), dh_dir=dh_dir
-    )
-    assert template.startswith("mimicc_experiment/")
-    assert (dh_dir / "templates" / "mimicc_experiment" / "schema.json").exists()
+@pytest.mark.parametrize(("role", "folder"), [("experiment", "mimicc_experiment"), ("study", "study")])
+def test_compile_for_grid_uses_each_roles_own_folder(role, folder):
+    source = "mimicc_experiment" if role == "experiment" else "SRA_study"
+    result = schema_service.compile_for_grid(role, _bundled(source))
+    assert result["folder"] == folder
+    assert result["template"] == f"{folder}/{schema_service.ROLE_TEMPLATE_CLASSES[role]}"

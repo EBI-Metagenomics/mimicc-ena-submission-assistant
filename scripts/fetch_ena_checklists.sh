@@ -2,8 +2,8 @@
 # Fetch the full set of public ENA sample-checklist XML definitions (beyond
 # the three already committed at the top level of assets/ena_schema/ --
 # ERC000015/22/25, used directly by submit_sample.py) so the schema "import"
-# feature (POST /api/schemas/import, schema_service.list_ena_sources) can draw
-# on all of them.
+# feature (schema_service.import_build, listed from assets/ena_schema/index.json)
+# can draw on all of them. Regenerates that index at the end.
 #
 # ENA does not publish a stable listing endpoint for checklist accessions, so
 # this probes the documented per-accession endpoint
@@ -48,3 +48,4 @@ for n in $(seq -f "%06g" 1 "$MAX_N"); do
 done
 
 echo "Done. Fetched $fetched checklist(s) into $DEST"
+"$ROOT/.venv/bin/python" "$ROOT/scripts/build_static_indexes.py"

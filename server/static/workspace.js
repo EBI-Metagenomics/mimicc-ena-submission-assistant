@@ -3,20 +3,25 @@
 // ---------------------------------------------------------------------------
 // Workspace store — IndexedDB (single-user, local-only; no backend). One
 // implicit record holds the full UI snapshot, the three DataHarmonizer
-// exports and the reads resume ledger. It is restored on load with no prompt.
+// exports, the reads resume ledger and which library schema each grid uses.
+// It is restored on load with no prompt. The schema library is a second store
+// (SCHEMA_STORE, see schema.js), kept apart so clearing the workspace keeps it.
 // ---------------------------------------------------------------------------
 const DB_NAME = "mimicc";
 const DB_STORE = "sessions";   // store name kept so existing browser data stays readable
+const SCHEMA_STORE = "schemas";
 const WORKSPACE_ID = "workspace";
 let _dbPromise = null;
 
 function idbOpen() {
   if (_dbPromise) return _dbPromise;
   _dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
+    const req = indexedDB.open(DB_NAME, 2);
     req.onupgradeneeded = () => {
       const db = req.result;
-      if (!db.objectStoreNames.contains(DB_STORE)) db.createObjectStore(DB_STORE, { keyPath: "id" });
+      for (const store of [DB_STORE, SCHEMA_STORE]) {
+        if (!db.objectStoreNames.contains(store)) db.createObjectStore(store, { keyPath: "id" });
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -26,19 +31,26 @@ function idbOpen() {
 function idbReq(request) {
   return new Promise((res, rej) => { request.onsuccess = () => res(request.result); request.onerror = () => rej(request.error); });
 }
-async function idbGet(id) {
+async function idbGet(id, store = DB_STORE) {
   const db = await idbOpen();
-  return idbReq(db.transaction(DB_STORE, "readonly").objectStore(DB_STORE).get(id));
+  return idbReq(db.transaction(store, "readonly").objectStore(store).get(id));
 }
-async function idbAll() {
+async function idbAll(store = DB_STORE) {
   const db = await idbOpen();
-  return idbReq(db.transaction(DB_STORE, "readonly").objectStore(DB_STORE).getAll());
+  return idbReq(db.transaction(store, "readonly").objectStore(store).getAll());
 }
-async function idbPut(record) {
+async function idbWrite(store, fn) {
   const db = await idbOpen();
-  const tx = db.transaction(DB_STORE, "readwrite");
-  tx.objectStore(DB_STORE).put(record);
-  return new Promise((res, rej) => { tx.oncomplete = () => res(record); tx.onerror = () => rej(tx.error); });
+  const tx = db.transaction(store, "readwrite");
+  fn(tx.objectStore(store));
+  return new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+}
+async function idbPut(record, store = DB_STORE) {
+  await idbWrite(store, (s) => s.put(record));
+  return record;
+}
+async function idbDelete(id, store = DB_STORE) {
+  return idbWrite(store, (s) => s.delete(id));
 }
 
 /** A record from before sessions were removed (or a downloaded
@@ -68,6 +80,17 @@ async function dbSaveState(state, readsRuns) {
   Object.assign(r, { state, state_saved_at: now, updated_at: now, reads_runs: readsRuns || {} });
   await idbPut(r);
   return now;
+}
+/** Which library schema each grid uses ({ sample, experiment, study }). */
+async function dbSetGridSchema(role, schemaId) {
+  const r = (await idbGet(WORKSPACE_ID)) || { id: WORKSPACE_ID };
+  r.grid_schemas = { ...(r.grid_schemas || {}) };
+  if (schemaId) r.grid_schemas[role] = schemaId;
+  else delete r.grid_schemas[role];
+  await idbPut(r);
+}
+async function dbGetGridSchemas() {
+  return ((await idbGet(WORKSPACE_ID)) || {}).grid_schemas || {};
 }
 async function dbSaveDhExport(kind, exportJson) {
   const r = (await idbGet(WORKSPACE_ID)) || { id: WORKSPACE_ID };
@@ -246,7 +269,8 @@ async function saveWorkspaceNow() {
 // ---------------------------------------------------------------------------
 async function downloadWorkspace() {
   await saveWorkspaceNow();
-  const rec = await idbGet(WORKSPACE_ID);
+  // The schema library travels with it: a grid_schemas entry names a schema by id.
+  const rec = { ...(await idbGet(WORKSPACE_ID)), schemas: await listLibrarySchemas() };
   const blob = new Blob([JSON.stringify(rec, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -259,7 +283,8 @@ async function downloadWorkspace() {
 }
 
 /** Replace the workspace with a downloaded file (a workspace, or an old
- *  `.session.json`), then reload so it is applied onto a clean page. */
+ *  `.session.json`), then reload so it is applied onto a clean page. Schemas in
+ *  the file are added to the library, replacing any with the same id. */
 function importWorkspace() {
   const f = $("workspaceImportFile").files[0];
   if (!f) return;
@@ -270,7 +295,10 @@ function importWorkspace() {
       if (!rec || typeof rec !== "object" || !("state" in rec)) throw new Error("Not a valid workspace file.");
       if (!confirm("Replace the current workspace with this file? Anything not downloaded is lost.")) return;
       if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
-      await idbPut(asWorkspace(rec));
+      const { schemas, ...workspace } = rec;
+      for (const schema of schemas || []) await idbPut(schema, SCHEMA_STORE);
+      await idbPut(asWorkspace(workspace));
+      // Each grid's schema is recompiled into the cache on load (restoreGridSchemas).
       location.reload();
     } catch (e) { alert(e.message); }
     finally { $("workspaceImportFile").value = ""; }

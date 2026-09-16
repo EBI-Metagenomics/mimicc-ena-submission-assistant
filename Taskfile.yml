@@ -29,6 +29,13 @@ tasks:
     cmds:
       - .venv/bin/python scripts/build_py_bundle.py
 
+  build:indexes:
+    desc: >
+      Regenerate schemas/index.json and assets/ena_schema/index.json (a static
+      host cannot list directories). Re-run after adding a schema or checklist.
+    cmds:
+      - .venv/bin/python scripts/build_static_indexes.py
+
   test:
     desc: Run the pytest suite (API + read-assignment unit tests, no Docker)
     cmds:

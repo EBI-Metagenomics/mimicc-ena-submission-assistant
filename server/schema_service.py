@@ -1,17 +1,18 @@
-"""Schema library: list/save/delete LinkML schemas, import/merge ENA XML/XSD/
-YAML sources into a new schema, and install a chosen schema into a
-DataHarmonizer grid's served template folder.
+"""LinkML schema work for the schema library and the DataHarmonizer grids.
 
-Selecting a schema for a grid recompiles the LinkML in-process
-(``dataharmonizer_compile.compile_schema_json``) and overwrites that grid's
-fixed template folder's ``schema.json`` directly. DataHarmonizer fetches that
-file over HTTP at runtime (``lib/utils/templates.js: fetchSchema``), so this
-takes effect on the next iframe reload — no ``yarn build`` rebuild needed.
+Runs in the browser (``py()``); pure — no filesystem state of its own. The
+library itself lives in the browser's IndexedDB (``static/schema.js``):
+
+* ``describe_schema`` validates YAML and names it, for saving to the library;
+* ``import_build`` converts + merges ENA XML/XSD/YAML sources into a new schema;
+* ``compile_for_grid`` compiles a schema for one grid's fixed template folder.
+  The page puts the result in Cache Storage, where the service worker
+  (``static/sw.js``) serves it in place of the bundle's ``schema.json`` —
+  DataHarmonizer fetches that file at runtime, so no rebuild is needed.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import Any
@@ -28,9 +29,9 @@ from linkml_lib import io as linkml_io
 # linkml-lib tag happens to be pinned.
 SCHEMA_BASE_URI = "https://github.com/EBI-Metagenomics/mimicc-ena-submission-assistant"
 
-# Fixed DataHarmonizer template folders the two grids are pointed at
-# (server/static/app.js: initDhFrames). Selecting a schema for a role
-# overwrites that folder's schema.json rather than registering a new folder.
+# Fixed DataHarmonizer template folders the grids are pointed at
+# (static/dataharmonizer.js: initDhFrames). Selecting a schema for a role
+# replaces that folder's schema.json rather than registering a new folder.
 ROLE_FOLDERS = {"sample": "mimicc", "experiment": "mimicc_experiment", "study": "study"}
 # Each value MUST equal the class name the role's fixed template folder was
 # built with (Dockerfile dh-builder stage) — sample/experiment use their
@@ -48,81 +49,26 @@ def _slugify(name: str) -> str:
     return slug or "schema"
 
 
-def _ensure_seeded() -> None:
-    """Seed the writable schema library from the bundled defaults on first use."""
-    target = _bootstrap.schemas_dir()
-    if any(target.glob("*.yaml")):
-        return
-    try:
-        source_dir = _bootstrap.vendor_schemas_dir()
-    except RuntimeError:
-        return
-    # Seed under the slugified id (not the raw filename): list_schemas reports
-    # id == path.stem, but read/save/delete all resolve via _schema_path, which
-    # slugifies (lower-cases). If we kept an upper-case source name like
-    # SRA_study.yaml, the listed id "SRA_study" would resolve to sra_study.yaml
-    # and 404 — so every upper-case-named schema in the dropdown was
-    # unselectable. Writing the slug here keeps listing and lookup consistent.
-    for src in source_dir.glob("*.yaml"):
-        _schema_path(src.stem).write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-
-
-def _schema_path(schema_id: str) -> Path:
-    safe = _slugify(schema_id)
-    return _bootstrap.schemas_dir() / f"{safe}.yaml"
-
-
-def list_schemas() -> list[dict[str, Any]]:
-    """Schemas in the writable library (seeded from bundled defaults on first use)."""
-    _ensure_seeded()
-    out: list[dict[str, Any]] = []
-    for path in sorted(_bootstrap.schemas_dir().glob("*.yaml")):
-        try:
-            schema = linkml_io.load_yaml(path)
-        except Exception:
-            continue
-        if not isinstance(schema, dict):
-            continue
-        out.append(
-            {
-                "id": path.stem,
-                "name": schema.get("name") or path.stem,
-                "title": schema.get("title") or schema.get("name") or path.stem,
-                "description": schema.get("description"),
-            }
-        )
-    return out
-
-
-def read_schema(schema_id: str) -> str:
-    _ensure_seeded()
-    path = _schema_path(schema_id)
-    if not path.exists():
-        raise ValueError(f"Schema not found: {schema_id}")
-    return path.read_text(encoding="utf-8")
-
-
-def save_schema(name: str, yaml_text: str) -> str:
-    """Validate and save LinkML YAML text under an id slugified from `name`
-    (or the schema's own `name` field if `name` is blank). Returns the id."""
+def describe_schema(yaml_text: str, name: str = "") -> dict[str, Any]:
+    """Validate LinkML YAML and describe it as a library entry: ``id`` is
+    slugified from ``name`` (or the schema's own ``name`` when blank)."""
     try:
         schema = linkml_io.load_yaml_text(yaml_text)
     except yaml.YAMLError as exc:
         raise ValueError(f"Invalid YAML: {exc}") from exc
     schema_id = _slugify(name or schema.get("name") or "schema")
-    _schema_path(schema_id).write_text(yaml_text, encoding="utf-8")
-    return schema_id
-
-
-def delete_schema(schema_id: str) -> None:
-    path = _schema_path(schema_id)
-    if not path.exists():
-        raise ValueError(f"Schema not found: {schema_id}")
-    path.unlink()
+    return {
+        "id": schema_id,
+        "name": schema.get("name") or schema_id,
+        "title": schema.get("title") or schema.get("name") or schema_id,
+        "description": schema.get("description"),
+    }
 
 
 def list_ena_sources() -> dict[str, list[dict[str, str]]]:
-    """Bundled ENA checklist XML / SRA+project XSD files importable as schema sources."""
+    """Bundled ENA checklist XML / SRA+project XSD files importable as schema
+    sources. A static host cannot list a directory, so the page reads this from
+    ``assets/ena_schema/index.json`` (``scripts/build_static_indexes.py``)."""
     base = _bootstrap.xsd_dir()
     checklists: list[dict[str, str]] = []
     for sub in (base, base / "checklists"):
@@ -147,23 +93,20 @@ def _resolve_source_path(source_id: str) -> Path:
 def import_build(
     *,
     source_ids: list[str] | None = None,
-    schema_ids: list[str] | None = None,
     upload_paths: list[Path] | None = None,
     name: str | None = None,
     title: str | None = None,
     include: list[str] | None = None,
     exclude: list[str] | None = None,
 ) -> str:
-    """Convert+merge bundled ENA XML/XSD sources, existing saved schemas, and
-    uploaded files into one LinkML schema (generic "import" for building a new
-    schema). Priority = the order given (earlier inputs win on conflicts).
-    Returns the merged schema as LinkML YAML text (not saved).
+    """Convert+merge bundled ENA XML/XSD sources and files (saved library
+    schemas, uploads) into one LinkML schema (generic "import" for building a
+    new schema). Priority = the order given, sources first (earlier inputs win
+    on conflicts). Returns the merged schema as LinkML YAML text (not saved).
     """
     paths: list[Path] = []
     for sid in source_ids or []:
         paths.append(_resolve_source_path(sid))
-    for sid in schema_ids or []:
-        paths.append(_schema_path(sid))
     for p in upload_paths or []:
         paths.append(Path(p))
     if not paths:
@@ -212,37 +155,17 @@ def _template_class_name(schema: dict[str, Any]) -> str:
     raise ValueError("Schema has no renderable classes")
 
 
-def select_for_grid(role: str, yaml_text: str, *, dh_dir: Path) -> str:
-    """Compile `yaml_text` and install it as the served schema.json for the
-    role's fixed DataHarmonizer template folder. Returns the
-    `<folder>/<schema name>` path the frontend points the iframe's
-    `?template=` at.
+def compile_for_grid(role: str, yaml_text: str) -> dict[str, Any]:
+    """Compile a schema for one grid's fixed DataHarmonizer template folder.
+
+    Returns the compiled ``schema_json`` plus where it belongs (``folder``) and
+    the ``<folder>/<class>`` ``template`` the iframe's ``?template=`` points at.
+    The renderable class is renamed to the role's fixed class, which is what
+    the bundle's registry and menu were built with.
     """
-    return select_for_grid_result(role, yaml_text, dh_dir=dh_dir)["template"]
-
-
-def select_for_grid_result(
-    role: str,
-    yaml_text: str,
-    *,
-    dh_dir: Path,
-    require_existing_template: bool = False,
-) -> dict[str, Any]:
-    """Compile and install a schema for one grid, returning frontend-facing details."""
     folder = ROLE_FOLDERS.get(role)
     if folder is None:
         raise ValueError(f"Unknown role: {role}. Expected one of {sorted(ROLE_FOLDERS)}")
-
-    tpl_dir = dh_dir / "templates" / folder
-    if require_existing_template:
-        if not (dh_dir / "index.html").exists():
-            raise ValueError("DataHarmonizer bundle is not built. Rebuild the bundle before selecting schemas.")
-        if not tpl_dir.exists():
-            raise ValueError(
-                f'DataHarmonizer template folder "{folder}" is missing. '
-                "Rebuild the bundle so the fixed sample/experiment templates are registered."
-            )
-
     try:
         schema = linkml_io.load_yaml_text(yaml_text)
     except yaml.YAMLError as exc:
@@ -251,30 +174,13 @@ def select_for_grid_result(
     compiled = dataharmonizer_compile.compile_schema_json(schema)
     template_name = ROLE_TEMPLATE_CLASSES[role]
     diagnostics = _adapt_compiled_schema_for_role(compiled, source_template_name, template_name)
-
-    tpl_dir.mkdir(parents=True, exist_ok=True)
-    (tpl_dir / "schema.json").write_text(json.dumps(compiled, indent=2), encoding="utf-8")
-    (tpl_dir / "schema.yaml").write_text(yaml_text, encoding="utf-8")
-    export_js = tpl_dir / "export.js"
-    if not export_js.exists():
-        export_js.write_text("export default {};\n", encoding="utf-8")
-
-    registry_path = dh_dir / "dh-template-registry.json"
-    try:
-        registry = json.loads(registry_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        registry = {}
-    registry[folder] = template_name
-    registry_path.write_text(json.dumps(registry, indent=2), encoding="utf-8")
-
-    template = f"{folder}/{template_name}"
     return {
         "role": role,
         "folder": folder,
         "template_name": template_name,
-        "template": template,
+        "template": f"{folder}/{template_name}",
+        "schema_json": compiled,
         "diagnostics": diagnostics,
-        "logs": [f'Installed "{template}" into DataHarmonizer folder "{folder}".'],
     }
 
 

@@ -7,20 +7,12 @@
 // refuses to start in a classic one.
 // ---------------------------------------------------------------------------
 
-import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide.mjs";
-
-// ponytail: Pyodide from the CDN, pinned; self-host under /static/py/ if offline use matters.
-const PYODIDE_URL = "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/";
-
-// linkml declares these but the app never imports them (ShEx parsing, file
-// watching, a test plugin), and none has a pure-Python wheel. Registering them
-// as already installed lets micropip resolve the rest.
-const MOCKED_PACKAGES = [["watchdog", "6.0.0"], ["antlr4-python3-runtime", "4.9.3"], ["pytest-logging", "2015.11.4"], ["cfgraph", "0.2.1"]];
-// Versions match uv.lock, so the browser runs what the Python tests ran.
-// Pyodide supplies lxml, pydantic, PyYAML, httpx and jsonschema itself.
-const PYPI_REQUIREMENTS = ["linkml==1.11.1", "linkml-runtime==1.11.1", "typer==0.26.8", "pydantic-settings==2.14.2"];
+import { MOCKED_PACKAGES, PYODIDE_URL, PYPI_REQUIREMENTS } from "./versions.js";
 
 async function boot() {
+  // Imported here, not at the top: a module worker with top-level await could
+  // miss messages posted before its onmessage handler exists.
+  const { loadPyodide } = await import(PYODIDE_URL + "pyodide.mjs");
   const pyodide = await loadPyodide({ indexURL: PYODIDE_URL });
   await pyodide.loadPackage(["micropip", "httpx", "lxml", "pydantic", "pyyaml"]);
   const bundle = await fetch(new URL("app.zip", self.location.href));
@@ -41,14 +33,21 @@ ena_bridge.install()
 
 const ready = boot();
 
-/** Put the files a call reads into Pyodide's filesystem first ({ fsPath: url }).
- *  Fetched every time — a selected schema changes under the same URL. A file
- *  the server doesn't have is removed, so Python raises its own "not found". */
+/** Put the files a call reads into Pyodide's filesystem first: { fsPath: url }
+ *  fetches (every time — a selected schema changes under the same URL), and
+ *  { fsPath: { data } } writes text or bytes the page already holds. A URL the
+ *  server doesn't have removes the file, so Python raises its own "not found". */
 async function provide(pyodide, files) {
-  for (const [path, url] of Object.entries(files || {})) {
-    const res = await fetch(url, { cache: "no-store" });
+  for (const [path, source] of Object.entries(files || {})) {
+    const dir = path.slice(0, path.lastIndexOf("/")) || "/";
+    if (typeof source !== "string") {
+      pyodide.FS.mkdirTree(dir);
+      pyodide.FS.writeFile(path, source.data);
+      continue;
+    }
+    const res = await fetch(source, { cache: "no-store" });
     if (res.ok) {
-      pyodide.FS.mkdirTree(path.slice(0, path.lastIndexOf("/")) || "/");
+      pyodide.FS.mkdirTree(dir);
       pyodide.FS.writeFile(path, new Uint8Array(await res.arrayBuffer()));
     } else {
       try { pyodide.FS.unlink(path); } catch { /* was never there */ }

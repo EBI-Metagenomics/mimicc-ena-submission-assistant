@@ -194,15 +194,18 @@ The **Schema** tab lets you build, edit, save, and select LinkML schemas for the
 sample/experiment grids, instead of being stuck with the two prebuilt MIMICC
 templates:
 
-- **Library** — schemas saved under `~/.mimicc-ena/schemas` (`/schemas` in the
-  container; `SCHEMAS_CONTAINER_DIR`), seeded on first use from the bundled
-  `schemas/*.yaml`. Each row can be edited, used for the sample or
-  experiment grid, exported as a `.yaml` file, or deleted. You can also supply
-  your own schema/checklist/XSD file from disk via the file picker.
+- **Library** — kept in this browser (IndexedDB), seeded on first use from the
+  bundled `schemas/*.yaml` (listed with their titles in `schemas/index.json`, so
+  no Python is needed to show them). Each row can be edited, used for the sample
+  or experiment grid, exported as a `.yaml` file, or deleted. You can also
+  supply your own schema/checklist/XSD file from disk via the file picker.
+  **Download** in the header carries the library and each grid's selection with
+  the workspace; **Import…** restores both.
 - **Build** — merges fields from bundled ENA sample checklists (`assets/
   ena_schema/*.xml` and `.../checklists/*.xml`, fetched with
-  `scripts/fetch_ena_checklists.sh`), ENA/SRA XSDs (`assets/ena_schema/
-  *.xsd`), and/or existing saved schemas (`POST /api/schemas/import`, backed by
+  `scripts/fetch_ena_checklists.sh`, listed in `assets/ena_schema/index.json`),
+  ENA/SRA XSDs (`assets/ena_schema/*.xsd`), and/or existing saved schemas
+  (`schema_service.import_build` in the browser's Python, backed by
   `linkml_lib.pipeline.build` — the same XML/XSD→LinkML converters used
   elsewhere in this app). Earlier-selected sources win on conflicting fields.
 - **Edit** — the merged/loaded schema opens in an embedded
@@ -210,20 +213,22 @@ templates:
   sidecar (the `dhtb` service in `docker-compose.yml`, built from a pinned
   git URL — see "Pinned dependency versions" below), via its `postMessage` bridge
   (`dhtb.loadYaml` / `dhtb.exportYaml` / `dhtb.ready` / `dhtb.exported`/
-  `dhtb.error` — see its own `docs/integration-contract.md`). Saving writes the
-  exported YAML to the library (`POST /api/schemas`).
-- **Select** — choosing a schema for the sample or experiment grid
-  (`POST /api/schemas/select {role, schema_id}`) compiles it in-process
-  (`linkml_lib.dataharmonizer_compile`, the same pure-Python compiler DH's own
-  `script/linkml.py` performs) and overwrites that grid's *existing* template
-  folder's `schema.json` (`mimicc/` or `mimicc_experiment/` under
-  `server/static/dh/templates/`) plus `dh-template-registry.json`. Because
-  DataHarmonizer fetches `schema.json` over HTTP at runtime
-  (`lib/utils/templates.js: fetchSchema`), this takes effect on the next
-  iframe reload — **no DataHarmonizer bundle rebuild needed**. (Schema
-  selection only swaps the served JSON for an already-registered template
-  folder; it doesn't recompile the Node/Yarn bundle, which is built once at
-  image-build time — see "DataHarmonizer bundle build" above.)
+  `dhtb.error` — see its own `docs/integration-contract.md`). Saving validates
+  the exported YAML in Python (`schema_service.describe_schema`) and stores it in
+  the library.
+- **Select** — choosing a schema for a grid compiles it in the browser's Python
+  (`schema_service.compile_for_grid` → `linkml_lib.dataharmonizer_compile`, the
+  same pure-Python compiler DH's own `script/linkml.py` performs) and puts the
+  result in Cache Storage at `/templates/<folder>/schema.json` (`mimicc/`,
+  `mimicc_experiment/` or `study/`). A service worker (`server/static/sw.js`,
+  served at `/sw.js`) answers DataHarmonizer's fetch of that file from the
+  cache and falls back to the bundle's built default, so this takes effect on
+  the next iframe reload — **no DataHarmonizer bundle rebuild needed** — and
+  survives a browser restart with no Python loaded. Each cached schema is
+  tagged with the compiler version (`server/static/py/versions.js`); a stale
+  one is recompiled from the library on load, and deleting a grid's schema
+  reverts that grid to its default. Selections are per browser: nothing is
+  written into the shared bundle any more.
 - **Experiment schema caveat**: selecting an experiment schema that doesn't use
   the column-title contract below (`Experiment name` / `Sample alias`) breaks
   read-pairing sync — the Reads tab shows a non-blocking warning when this is
@@ -567,7 +572,6 @@ server/
   views_auth.py         login/logout/me, admin user management
   views_credentials.py  Webin credentials set/clear (POST/DELETE /api/credentials)
   views_sessions.py     submission session CRUD + state + DH export
-  views_schemas.py      schema library CRUD + ENA XML/XSD import/merge + grid selection
   middleware.py         skips Django's CSRF checks in local (single-user) mode
   auth.py               accounts, login sessions, admin bootstrap; (user, error_response) view helpers
   credentials_store.py  per-user Webin credentials, cache-backed (Redis in hosted mode, never DB)
@@ -579,7 +583,7 @@ server/
   read_assign.py        scan / suggest / manifest (text) build and upload plan for reads
   pyodide/              ena_bridge.py (httpx over sync XHR + py() entry point), shims/pendulum.py
   session_store.py      submission sessions + reads ledger, Django-ORM-backed, owner-scoped
-  schema_service.py     schema library: list/save/delete, ENA XML/XSD import/merge, grid selection
+  schema_service.py     schema naming, ENA XML/XSD import/merge, grid compile (all run in the browser)
   _bootstrap.py         locates the committed schema/XSD assets (schemas/, assets/ena_schema/;
                         sys.path is no longer needed for ena_api/linkml_lib/
                         ena-submission-toolkit — they're pinned pip dependencies, see pyproject.toml)
