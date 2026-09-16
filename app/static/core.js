@@ -1,0 +1,312 @@
+"use strict";
+
+// ---------------------------------------------------------------------------
+// Global state + helpers
+// ---------------------------------------------------------------------------
+let TEST = true;            // ENA test vs production
+let CONFIG = {};           // config.json — see loadConfig()
+let RUN_ROWS = [];          // editable run records for the Reads tab
+let READ_SAMPLES = [];      // ENA samples available for read assignment
+let SELECTED_SAMPLE = "";   // selected sample accession for click assignment
+let READS_RUNS = {};        // run_name -> reads ledger row (resume status) for the workspace
+
+const $ = (id) => document.getElementById(id);
+
+let HELPER_BASE = "";       // base URL of the local reads upload helper, e.g. http://localhost:9100
+let HELPER_OK = false;      // whether the helper is currently reachable
+// Whether the reads upload mode (helper vs. manual) is the user's own choice —
+// set by picking it, or by restoring a workspace that recorded one. Until then
+// we're free to default it to whatever actually works on this machine.
+let READS_MODE_CHOSEN = false;
+
+// Webin (ENA) credentials live in the browser for this tab only (sessionStorage,
+// see credentials.js). They go to ENA from the Python worker (enaPy) and never
+// to this app's own server.
+let CREDS = { username: "", password: "" };
+
+/** Deployment configuration: config.json, written by scripts/build_dist.py
+ *  (helper port, dhtb URL, and what the build found — the DataHarmonizer
+ *  bundle, the ena-browser element, the editable columns per entity). */
+async function loadConfig() {
+  const res = await fetch("/config.json", { cache: "no-store" });
+  if (!res.ok) throw new Error(`config.json unavailable (HTTP ${res.status}) — build the site with scripts/build_dist.py.`);
+  return res.json();
+}
+
+// Call the app's Python in the browser (static/py/worker.js): `target` is
+// "module.function" in ena_service / read_assign / schema_service. `files`
+// maps paths in Python's filesystem to URLs to fetch there first. The worker
+// starts on first use — Pyodide and its packages take seconds to load, so pages
+// that never need Python never pay for it.
+let _pyWorker = null;
+const _pyPending = new Map();
+let _pySeq = 0;
+
+function pyWorker() {
+  if (_pyWorker) return _pyWorker;
+  _pyWorker = new Worker("/static/py/worker.js", { type: "module" });
+  _pyWorker.onmessage = ({ data }) => {
+    const call = _pyPending.get(data.id);
+    if (!call) return;
+    _pyPending.delete(data.id);
+    if (data.error !== undefined) call.reject(new Error(data.error));
+    else call.resolve(data.result);
+  };
+  // A worker that fails to start never answers; fail every waiting call and
+  // start afresh on the next one.
+  _pyWorker.onerror = (e) => {
+    const err = new Error(`Python runtime failed to start: ${e.message || "worker error"}`);
+    _pyPending.forEach((call) => call.reject(err));
+    _pyPending.clear();
+    _pyWorker = null;
+  };
+  return _pyWorker;
+}
+
+function py(target, kwargs = {}, files = {}) {
+  return new Promise((resolve, reject) => {
+    const id = ++_pySeq;
+    _pyPending.set(id, { resolve, reject });
+    pyWorker().postMessage({ id, target, kwargs, files });
+  });
+}
+
+/** py() for a call that acts on ENA as the user: adds the Webin credentials
+ *  and the test/production switch, and fails fast without credentials. */
+async function enaPy(target, kwargs = {}, files = {}) {
+  if (!credsConfigured()) throw new Error("Credentials not set. Enter your Webin username and password.");
+  return py(target, { creds: CREDS, test: TEST, ...kwargs }, files);
+}
+
+/** A `files` map for py() of app-served paths fetched to the same path in the
+ *  worker — which is where _bootstrap looks for schemas/ and assets/ena_schema/. */
+function servedFiles(...paths) {
+  return Object.fromEntries(paths.map((path) => [path, path]));
+}
+
+// Call the local reads upload helper (cross-origin to 127.0.0.1:<helper_port>).
+async function helperApi(path, opts = {}) {
+  const res = await fetch(HELPER_BASE + path, {
+    headers: { "Content-Type": "application/json" },
+    ...opts,
+  });
+  const text = await res.text();
+  let body;
+  try { body = text ? JSON.parse(text) : {}; } catch { body = { detail: text }; }
+  if (!res.ok) throw new Error(body.detail || `helper HTTP ${res.status}`);
+  return body;
+}
+
+// Record text comes from ENA, and manifests are XML — neither is safe to drop
+// into innerHTML raw.
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+}
+
+function banner(id, ok, msg) {
+  const el = $(id);
+  if (msg) {
+    el.className = "vf-banner vf-banner--alert " + (ok ? "vf-banner--success" : "vf-banner--danger");
+    el.style.display = "block";
+  } else {
+    el.style.display = "none";
+  }
+  el.textContent = msg;
+}
+
+function renderTable(containerId, rows) {
+  const el = $(containerId);
+  if (!rows || !rows.length) { el.innerHTML = '<p class="muted" style="padding:10px">No records.</p>'; return; }
+  const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))];
+  let h = "<table><thead><tr>" + cols.map((c) => `<th>${c}</th>`).join("") + "</tr></thead><tbody>";
+  for (const r of rows) {
+    h += "<tr>" + cols.map((c) => `<td>${r[c] == null ? "" : String(r[c])}</td>`).join("") + "</tr>";
+  }
+  el.innerHTML = h + "</tbody></table>";
+}
+
+function renderSubmissionResult(containerId, result) {
+  const el = $(containerId);
+  el.innerHTML = "";
+
+  const pre = document.createElement("pre");
+  pre.className = "log";
+  pre.textContent = submissionLogText(result);
+  el.appendChild(pre);
+
+  const rows = result.accessions || [];
+  const tableSlot = document.createElement("div");
+  el.appendChild(tableSlot);
+  if (!rows.length) {
+    tableSlot.innerHTML = '<p class="muted" style="padding:10px">No accession records returned.</p>';
+    return;
+  }
+
+  const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))];
+  let h = "<table><thead><tr>" + cols.map((c) => `<th>${c}</th>`).join("") + "</tr></thead><tbody>";
+  for (const r of rows) {
+    h += "<tr>" + cols.map((c) => `<td>${r[c] == null ? "" : String(r[c])}</td>`).join("") + "</tr>";
+  }
+  tableSlot.innerHTML = h + "</tbody></table>";
+}
+
+function renderSampleSubmission(containerId, result) {
+  renderSubmissionResult(containerId, result);
+}
+
+function submissionLogText(result) {
+  const logs = Array.isArray(result.logs) ? result.logs : [];
+  if (logs.length) return logs.join("\n");
+  if (result.error) return `ERROR: ${result.error}`;
+  return "No submission log lines returned.";
+}
+
+function renderSubmissionLog(containerId, result) {
+  const el = $(containerId);
+  if (el) el.textContent = submissionLogText(result);
+}
+
+function submissionFailureMessage(result, fallback = "Submission failed.") {
+  const logs = Array.isArray(result.logs) ? result.logs : [];
+  const diagnostic = [...logs].reverse().find((line) => /^(ERROR|WARNING):/.test(line));
+  if (diagnostic) {
+    return diagnostic
+      .replace(/^(ERROR|WARNING):\s*/, "")
+      .replace(/^Receipt:\s*/, "")
+      .replace(/^ERROR:\s*/, "");
+  }
+  if (result.error) return result.error;
+  if (logs.length) return "Submission failed; see the log for the last completed step.";
+  return fallback;
+}
+
+function togglePanelMax(panelId) {
+  const panel = $(panelId);
+  if (!panel) return;
+  const wasMaximized = panel.classList.contains("maximized");
+  document.querySelectorAll(".panel.maximized").forEach((el) => {
+    el.classList.remove("maximized");
+    const btn = el.querySelector(".panel-head .maximize-toggle-btn");
+    if (btn) {
+      btn.textContent = "⛶";
+      btn.title = "Maximize panel";
+      btn.setAttribute("aria-label", "Maximize panel");
+    }
+  });
+
+  if (!wasMaximized) {
+    panel.classList.add("maximized");
+    const btn = panel.querySelector(".panel-head .maximize-toggle-btn");
+    if (btn) {
+      btn.textContent = "−";
+      btn.title = "Minimize panel";
+      btn.setAttribute("aria-label", "Minimize panel");
+    }
+  }
+  document.body.classList.toggle("has-maximized-panel", !wasMaximized);
+  setTimeout(redrawGrids, 0);
+}
+
+// <ena-browser> renders nothing while its tab/panel has no layout, and exposes
+// no render(); setRows() re-renders, so bounce the rows through it.
+// ponytail: repaint-by-reset. If it ever costs measurably, ask ena-browser for
+// a public redraw() and use that instead.
+function redrawGrids(root = document) {
+  root.querySelectorAll("ena-browser").forEach((g) => {
+    if (g.getRows && g.offsetParent !== null) g.setRows(g.getRows());
+  });
+}
+
+// Pressing a cell makes Handsontable focus it, and its own focusin handler
+// then calls TD.scrollIntoView() — which scrolls the whole page (measured:
+// ~25-140px) between mousedown and mouseup. The row-action buttons wrap onto
+// two lines in the pinned column, so a shift of even one line means the release
+// lands on a *different* action; the element refuses that, so the click does
+// nothing and the page jumps.
+//
+// Record the page scroll on mousedown and put it back on focusin — in the
+// BUBBLE phase, so it runs after Handsontable's own handler has done the
+// scrolling (a capture-phase listener runs before it and gets overridden). It
+// has to be focusin rather than mouseup: restoring during mouseup re-renders
+// the grid mid-dispatch and the element never sees the release. The grid still
+// scrolls internally.
+let _gridScroll = null;
+document.addEventListener("mousedown", (e) => {
+  _gridScroll = e.target.closest?.("ena-browser") ? { x: window.scrollX, y: window.scrollY } : null;
+}, true);
+document.addEventListener("focusin", (e) => {
+  if (!_gridScroll || !e.target.closest?.("ena-browser")) return;
+  const { x, y } = _gridScroll;
+  _gridScroll = null;
+  // In a microtask, not inline: Handsontable's own focusin handler runs after
+  // this one and does the scrolling. Microtasks drain at the end of the focus
+  // task, so this lands after that scroll and still before mouseup.
+  queueMicrotask(() => window.scrollTo(x, y));
+});
+
+// VF's scripts.js owns the tab switch; redraw after it has run.
+document.addEventListener("click", (e) => {
+  if (e.target.closest(".vf-tabs__link")) setTimeout(redrawGrids, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Stop a DataHarmonizer iframe from silently reclaiming keyboard focus once
+// the user has clicked elsewhere. Handsontable tracks its own "isListening"
+// state (a module-level `activeGuid`, set via `hot.listen()`) completely
+// decoupled from real DOM focus — outsideClickDeselects:false is set
+// deliberately upstream — and keeps re-asserting it via real focus/select
+// calls on its own elements (see dataharmonizer.js's
+// disableIframeFocusWhenInactive for exactly which APIs and why). Confirmed
+// via a live console focus log that this reclaim can happen with NO bubbling
+// "focusin" the parent document ever sees, so nothing here can react to it
+// after the fact — hence blocking those calls at the source instead.
+// `dataset.userActive` gates that blocking; it's turned OFF here (any
+// mousedown that doesn't land on a given iframe means the user has moved on
+// from it), but turned ON from *inside* that iframe's own document, in
+// disableIframeFocusWhenInactive — a capturing-phase listener on the iframe's
+// own `document` is guaranteed to run before Handsontable's own listener on
+// the same document, whereas the ordering between this (parent-document)
+// listener and the iframe's internal one is not guaranteed at all, and
+// turning it on from here was observed to lose that race (blocking
+// Handsontable's own legitimate selection setup and breaking editing).
+// ---------------------------------------------------------------------------
+document.addEventListener("mousedown", (e) => {
+  const activeFrame = e.target.closest("iframe");
+  document.querySelectorAll(".dh-embed-frame").forEach((f) => {
+    if (f !== activeFrame) f.dataset.userActive = "0";
+  });
+}, true);
+
+// Handsontable's shortcut recorder (shortcuts/recorder.mjs `mount()`) walks
+// up the window hierarchy and attaches its own keydown/keyup listener
+// directly to every ANCESTOR window's `documentElement` too — i.e. it puts a
+// listener on THIS page's `documentElement`, from inside each DH iframe,
+// entirely deliberately (documented as supporting shortcuts while embedded).
+// It's gated only by Handsontable's own `isListening()` flag, which has no
+// public API to clear and is completely decoupled from real DOM focus, so a
+// key pressed in an ordinary field here (e.g. the sample filter input) can
+// still bubble up to that listener and get treated as a grid shortcut
+// (Enter advances a row, Backspace deletes a cell) even though the grid
+// never had real focus. Stopping propagation at `body` — one level below
+// `documentElement`, where Handsontable's listener actually lives — lets the
+// keystroke's target (and anything between it and `body`) see the event
+// normally, then keeps it from ever reaching that injected listener.
+// An <ena-browser> hosts its own in-page Handsontable, whose shortcut recorder
+// also sits on documentElement — so keys typed inside one have to get through.
+const _swallowKey = (e) => { if (!e.target.closest?.("ena-browser")) e.stopImmediatePropagation(); };
+document.body.addEventListener("keydown", _swallowKey);
+document.body.addEventListener("keyup", _swallowKey);
+
+// ---------------------------------------------------------------------------
+// Env toggle (tab switching handled by VF scripts.js via data-vf-js-tabs)
+// ---------------------------------------------------------------------------
+$("prodToggle").onchange = (e) => {
+  TEST = !e.target.checked;
+  const pill = $("envPill");
+  pill.textContent = TEST ? "TEST" : "PRODUCTION";
+  pill.className = "vf-badge " + (TEST ? "vf-badge--primary" : "vf-badge--secondary");
+  if (!TEST && !confirm("Switch to PRODUCTION ENA service? Submissions will be permanent.")) {
+    e.target.checked = false; TEST = true; pill.textContent = "TEST"; pill.className = "vf-badge vf-badge--primary";
+  }
+  scheduleSave();
+};

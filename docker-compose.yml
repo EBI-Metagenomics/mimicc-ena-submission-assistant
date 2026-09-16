@@ -13,34 +13,24 @@ services:
       # needed. The MIMICC schemas + ENA XSDs are committed directly in
       # this repo (schemas/, assets/ena_schema/).
     container_name: mimicc-ena-submission-assistant
-    # Single-user, local-only: bound to loopback. No database or cache — all
-    # session data lives in the browser (IndexedDB).
+    # Static files only (nginx serving scripts/build_dist.py's output), bound to
+    # loopback. The workspace and schema library live in the browser; ENA is
+    # called from the browser.
     ports:
       - "127.0.0.1:${MIMICC_PORT:-9000}:9000"
-    volumes:
-      # NB: the app doesn't mount the host Docker socket, the whole host
-      # (/hostroot) or a reads workspace — reads upload happens on the user's
-      # machine via the read-helper-app, and sessions live in the browser.
-      #
-      # Built DataHarmonizer bundle, served at /dh. Bind-mounted (rather than
-      # baked into the image) so it can be updated in place; seeded from the
-      # image's build-time bundle on first run (scripts/server_entrypoint.sh).
-      - ${MIMICC_DH_BUNDLE_DIR:-mimicc-dh-bundle}:/app/server/static/dh
-      # Schema library: saved/imported LinkML schemas backing the grids.
-      - ${MIMICC_SCHEMAS_DIR:-mimicc-schemas}:/schemas
     environment:
+      # Written into config.json when the container starts (docker/write-config.sh).
       # Loopback port the browser expects the local read-helper-app on.
       - HELPER_PORT=${HELPER_PORT:-9100}
-      - SCHEMAS_CONTAINER_DIR=/schemas
       # Browser-reachable URL of the dhtb sidecar (the browser talks to it
-      # directly, not through this container) — see /api/health: dhtb_url.
+      # directly, not through this container).
       - DHTB_URL=http://127.0.0.1:${MIMICC_DHTB_PORT:-8765}
     restart: unless-stopped
 
 
   # DataHarmonizer Template Builder: edit/preview LinkML schemas before
-  # selecting them via /api/schemas/select. Sibling service the main app
-  # embeds as an iframe (postMessage bridge); see server/static/app.js.
+  # selecting them for a grid. Sibling service the main app
+  # embeds as an iframe (postMessage bridge); see app/static/schema.js.
   dhtb:
     # See mimicc-server's platform comment above.
     platform: ${MIMICC_PLATFORM:-linux/arm64}
@@ -57,7 +47,3 @@ services:
     environment:
       - DHTB_FRONTEND_CONFIG_JSON={"hostMode":"embedded","hostName":"MIMICC ENA Submission Assistant","showImportButton":false,"showExportButton":false,"showGenerateButton":true,"showPreviewButton":true,"allowExampleSchema":false}
     restart: unless-stopped
-
-volumes:
-  mimicc-dh-bundle:
-  mimicc-schemas:

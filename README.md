@@ -4,23 +4,20 @@ A web app for submitting **studies**, **samples**, and **sequencing reads** to
 the European Nucleotide Archive (ENA) for the
 [MIMICC](../mimicc) project.
 
-It runs two ways from one codebase, selected by `DEPLOYMENT_MODE`:
-
-- **local** (default) — single user on one machine; auto-logs-in as admin, no
-  login screen. `docker compose` brings up everything.
-- **hosted** — multi-user on a shared server. Username/password accounts gate
-  access; session state and intermediate files live on the server (in Postgres);
-  studies/samples are submitted server-side; and **reads upload goes direct from
-  each user's machine to ENA** via a small local helper (the server never
-  touches read files).
+It is **a static site**: HTML, JavaScript and Python that runs in the browser
+(Pyodide). There is no application server — any static host serves it, and the
+browser talks to ENA directly (ENA's APIs are CORS-enabled). Your work (the
+workspace, the schema library) stays in your browser; **reads upload goes
+straight from your machine to ENA** — via a small local helper, or via a
+`webin-cli` command you run yourself.
 
 It ties together three existing tools:
 
 | Concern | Reused from | How |
 |---|---|---|
-| Create/modify/list/delete **studies & samples** | [`ena-api-client`](../ena-api-client) + [`ena-submission-toolkit`](https://github.com/EBI-Metagenomics/ena-submission-toolkit) | `WebinClient` REST submission (server-side) + the `submit_study`/`submit_sample` batch builders |
+| Create/modify/list/delete **studies & samples** | [`ena-api-client`](../ena-api-client) + [`ena-submission-toolkit`](https://github.com/EBI-Metagenomics/ena-submission-toolkit) | `WebinClient` REST submission (from the browser's Python) + the `submit_study`/`submit_sample` batch builders |
 | Enter **sample metadata** | [DataHarmonizer](../DataHarmonizer) | embedded spreadsheet UI (Samples tab) → export → filter/rename → submit |
-| Submit **reads** | [`read-helper-app`](../read-helper-app) | a local **[read-helper-app](https://github.com/EBI-Metagenomics/read-helper-app)** Electron app runs Webin-CLI via Java on the user's machine; the browser bridges manifest (server) → helper → result (server) |
+| Submit **reads** | [`read-helper-app`](../read-helper-app), or nothing at all | **Helper mode:** a local **[read-helper-app](https://github.com/EBI-Metagenomics/read-helper-app)** Electron app runs Webin-CLI via Java on the user's machine; the browser bridges manifest → helper → result. **Manual mode:** no helper — the browser lists the reads folder itself and hands the user a `webin-cli` command to paste into a terminal |
 
 New glue added here:
 
@@ -46,39 +43,61 @@ New glue added here:
   (ena-browser)" below.
 
 Everything runs against ENA **test** by default; a header toggle switches to
-**production** (with a confirm). Webin credentials are held per-user in a
-cache only and are never written to the database.
+**production** (with a confirm). Webin credentials are held in the browser tab
+only (sessionStorage) and sent nowhere but ENA and your local read-helper-app.
 
 ## Architecture
 
 ```
-Browser ── login cookie ──► Django server (server/config/, views_*.py)
-   │                          ├── auth.py + orm/ ── Django ORM (accounts, sessions, reads ledger) → Postgres
-   │                          ├── credentials_store.py ── per-user Webin creds, cache-backed (never DB)
-   │                          ├── ena_service.py ── ena-submission-toolkit (records/submit_study/submit_sample) ── ENA (REST/XML, server-side)
-   │                          └── read_assign.py ── suggest + manifest text build
-   │  fetch manifest + plan ◄─┘
-   │  POST manifest + Webin creds
-   ▼
-Local read-helper-app (127.0.0.1:9100, https://github.com/EBI-Metagenomics/read-helper-app) ── java -jar webin-cli.jar ──► ENA dropbox
-   │  SSE log stream ─► Browser ─► POST /api/reads/result (server updates the resume ledger)
+Browser (static files from dist/: index.html, static/*.js, sw.js, config.json)
+   │
+   ├── py() ──► Web Worker: Pyodide + app.zip (app/*.py, pinned EBI packages)
+   │              ena_service / read_assign / schema_service
+   │              └── httpx over sync XHR ──► ENA Submit / Reports / Browser / Portal APIs (CORS, Basic auth)
+   │
+   ├── IndexedDB: the workspace (fields, DH grid data, reads ledger) + the schema library
+   ├── Cache Storage + sw.js: each grid's compiled schema.json, served in place of the bundle default
+   ├── <iframe> /dh/ ── the built DataHarmonizer bundle (fetches /templates/<folder>/schema.json)
+   └── <iframe> dhtb sidecar (optional schema editor, cross-origin, postMessage)
+
+Local read-helper-app (127.0.0.1:9100, https://github.com/EBI-Metagenomics/read-helper-app) ── webin-cli ──► ENA dropbox
+   │  SSE log stream ─► Browser (read_assign.upload_result in Pyodide; browser updates the resume ledger)
+
+   ── or, in MANUAL mode (no helper) ──
+   Browser lists the reads folder itself (<input webkitdirectory>, names only) ─► read_assign.group_files (Pyodide)
+   Browser renders the plan as a shell script ─► user pastes it into their terminal ── webin-cli ──► ENA dropbox
+   Results come back on the next Generate: runs already in ENA are found by their stable alias.
 ```
 
-- **Database**: Django's ORM over **PostgreSQL**, with Django serving the HTTP
-  layer too (views in `server/views_*.py`, routed by `server/config/urls.py`).
-  Accounts use Django's `auth.User`; sessions, their full UI state, and the
-  reads resume ledger are owned per user. (When no `DATABASE_URL` is set the
-  ORM falls back to SQLite — used for tests and lightweight local runs.)
-- **Accounts**: a basic username/password system, separate from ENA Webin
-  credentials, with an `admin` superuser (from `ADMIN_USERNAME`/`ADMIN_PASSWORD`)
-  who can manage other accounts (Admin tab). Web logins are DB-backed cookies;
-  CSRF uses Django's standard cookie/token middleware (skipped entirely in
-  local mode — there's no login screen to attack in single-user mode).
-- **Reads**: the server builds the webin-cli manifest and the upload *plan*
-  (what to upload vs. skip, via the ledger + ENA Reports API), but the upload
-  itself runs on the user's machine in the [read-helper-app](https://github.com/EBI-Metagenomics/read-helper-app)
-  (built from a pinned tag, see "Pinned dependency versions" below) — reads
-  never pass through the server.
+- **Static site**: `scripts/build_dist.py` writes `dist/` — the page, the
+  service worker, `config.json` (helper port, dhtb URL, and what the build found),
+  `app.zip`, the schemas/XSDs the browser's Python reads, and the DataHarmonizer
+  bundle when one is built. Serve it from a real origin (`file://` does not work:
+  the service worker, the worker and the iframes need one). See
+  `STATIC_BROWSER_PLAN.md` for how it got here.
+- **Python in the browser**: every ENA call, study/sample Prepare and submit,
+  the records browser, the reads plan and schema import/compile run in a Pyodide
+  Web Worker (`app/static/py/`, `app/pyodide/`) over the unchanged
+  `ena_service`/`read_assign`/`schema_service` modules. First use downloads
+  Pyodide and its packages from jsDelivr/PyPI (~9 s cold, cached after); pages
+  that never need Python never load it.
+- **No server-side state**: the browser profile is the only copy of your
+  workspace and schema library. **Download** in the header backs both up.
+- **Reads**: the browser builds the webin-cli manifest and the upload *plan*
+  (what to upload vs. skip, via the ledger + ENA Reports API), and the upload
+  itself runs on the user's machine. The Reads tab offers two routes to run it:
+  - **Local helper app** — the [read-helper-app](https://github.com/EBI-Metagenomics/read-helper-app)
+    (built from a pinned tag, see "Pinned dependency versions" below) scans the
+    folder and runs webin-cli, streaming its log back to the page.
+  - **Manual** — no helper required. The browser lists the folder with a plain
+    directory input (**file names only**; no contents read, nothing uploaded),
+    `read_assign.group_files` pairs the mates, and the plan is rendered as a shell
+    script the user pastes into their own terminal. Needs Java and
+    [webin-cli](https://github.com/enasequence/webin-cli/releases) installed.
+    Credentials are never written into the script — it reads
+    `$WEBIN_USERNAME`/`$WEBIN_PASSWORD` from the shell. There is no log to paste
+    back: re-running **Generate** finds anything already in ENA by its stable
+    alias, which is what updates the ledger and the "In ENA" table.
 
 ## Install & run
 
@@ -92,53 +111,42 @@ schemas + ENA XSDs (`schemas/`, `assets/ena_schema/`) are committed directly
 in this repo — nothing to fetch for those either. See "Pinned dependency
 versions" below for where the sibling-repo pins live.
 
-### Local (single user)
+### With Docker
 
 ```bash
-# 1. Configure (admin/admin + bundled Postgres by default)
 cp .env.example .env   # optional — sensible defaults work out of the box
-
-# 2. Start the app + Postgres + DH sidecar + the local read-helper-app.
-#    The "local" profile includes the read-helper-app so reads upload works on one box.
-COMPOSE_PROFILES=local docker compose up -d --build
+docker compose up -d --build
 open http://localhost:9000
 ```
 
-Postgres data, the DH bundle/schema, and the schema library are kept in named
-Docker volumes (`docker volume ls | grep mimicc`); no host directories need
-pre-creating. Migrations run automatically on startup.
+The image builds the DataHarmonizer bundle and the static site, then serves
+`dist/` with nginx; `HELPER_PORT` and `DHTB_URL` are written into `config.json`
+when the container starts. The `dhtb` schema-editor sidecar runs alongside it.
+If port 9000 is already taken, set `MIMICC_PORT` in `.env`. Stop with
+`docker compose down`.
 
-If port 9000 is already taken, set `MIMICC_PORT` in `.env` and open
-`http://localhost:<MIMICC_PORT>`. Stop with `docker compose down` (add
-`--profile local` to also stop the helper).
-
-### Hosted (multi-user)
+### On any static host
 
 ```bash
-cp .env.example .env
-#   - set DEPLOYMENT_MODE=hosted
-#   - change ADMIN_PASSWORD and set a long DJANGO_SECRET_KEY
-#   - set strong POSTGRES_PASSWORD
-#   - set ALLOWED_ORIGINS to your app's public origin if the API is cross-origin
-docker compose up -d --build      # db + app + dhtb (NOT the read-helper-app)
+uv sync
+task build:dist -- --dh path/to/DataHarmonizer/web/dist   # omit --dh: the grids fall back to DH export upload
+# upload dist/ — or try it locally:
+task serve                                                 # http://127.0.0.1:9000
 ```
 
-Put the app behind a TLS-terminating reverse proxy (the login cookie is marked
-`Secure` in hosted mode) and adjust the port binding to expose it. Sign in as
-`admin`, then create user accounts from the **Admin** tab. Each user has their
-own private sessions and submissions.
+Set `HELPER_PORT`/`DHTB_URL` in the build's environment to change what
+`config.json` says. The host should send `Cache-Control: no-cache` (or
+otherwise not let old and new scripts mix) — `docker/nginx.conf` does. The
+schema editor needs a running `dhtb` instance at `DHTB_URL`; without one the rest
+of the app works, and schemas can still be imported from YAML/XML/XSD files.
 
-Each user installs and runs the [read-helper-app](https://github.com/EBI-Metagenomics/read-helper-app)
-on their **own workstation** (it is what uploads their reads directly to ENA).
-See its README; point its `MIMICC_APP_ORIGIN` at your hosted app so the
-browser page is allowed to drive the loopback helper.
-
-If you don't have a `DataHarmonizer` checkout, or want the Samples tab to fall
-back to DH export upload instead, see "DataHarmonizer bundle build" below.
+Each user runs the [read-helper-app](https://github.com/EBI-Metagenomics/read-helper-app)
+on their **own workstation** for helper-mode reads upload (or uses manual mode).
+Point its `MIMICC_APP_ORIGIN` at the site's origin so the page may drive it.
 
 ### DataHarmonizer bundle build
 
-The Samples tab embeds a built DataHarmonizer bundle (`server/static/dh/`) with
+The Samples tab embeds a built DataHarmonizer bundle (`app/static/dh/`) with
 the MIMICC template, carrying the LinkML schema committed at
 `schemas/mimicc_sample.yaml` (filtered from `mimicc_sample_experiment.yaml`
 down to sample-scoped slots — see "Experiment metadata schema" below for the
@@ -158,13 +166,10 @@ actual build steps (`dh_build_steps.sh`) from the standalone
 single canonical copy, not vendored here — pinned to a tag (`DH_BUILDER_REF` in
 the `Dockerfile`), so they can't drift apart.
 
-The bundle directory (`server/static/dh/`) is bind-mounted from a host
-directory (`MIMICC_DH_BUNDLE_DIR` in `.env`, defaulting under
-`~/.mimicc-ena/`), seeded from the image's build-time bundle on first run, so
-it stays writable in place across container restarts without needing a
-volume rebuild. There is no runtime/on-demand rebuild endpoint — updating the
-bundle (e.g. after a schema or DataHarmonizer version change) means rerunning
-`docker compose build`.
+The bundle is baked into the image's `dist/` (at `/dh/`, with its templates
+also at `/templates/`, where DataHarmonizer fetches them). Updating it (e.g.
+after a DataHarmonizer version change) means rerunning `docker compose build`;
+choosing a different schema for a grid does not — see "Schema library" below.
 
 ### Schema library (Schema tab)
 
@@ -172,15 +177,18 @@ The **Schema** tab lets you build, edit, save, and select LinkML schemas for the
 sample/experiment grids, instead of being stuck with the two prebuilt MIMICC
 templates:
 
-- **Library** — schemas saved under `~/.mimicc-ena/schemas` (`/schemas` in the
-  container; `SCHEMAS_CONTAINER_DIR`), seeded on first use from the bundled
-  `schemas/*.yaml`. Each row can be edited, used for the sample or
-  experiment grid, exported as a `.yaml` file, or deleted. You can also supply
-  your own schema/checklist/XSD file from disk via the file picker.
+- **Library** — kept in this browser (IndexedDB), seeded on first use from the
+  bundled `schemas/*.yaml` (listed with their titles in `schemas/index.json`, so
+  no Python is needed to show them). Each row can be edited, used for the sample
+  or experiment grid, exported as a `.yaml` file, or deleted. You can also
+  supply your own schema/checklist/XSD file from disk via the file picker.
+  **Download** in the header carries the library and each grid's selection with
+  the workspace; **Import…** restores both.
 - **Build** — merges fields from bundled ENA sample checklists (`assets/
   ena_schema/*.xml` and `.../checklists/*.xml`, fetched with
-  `scripts/fetch_ena_checklists.sh`), ENA/SRA XSDs (`assets/ena_schema/
-  *.xsd`), and/or existing saved schemas (`POST /api/schemas/import`, backed by
+  `scripts/fetch_ena_checklists.sh`, listed in `assets/ena_schema/index.json`),
+  ENA/SRA XSDs (`assets/ena_schema/*.xsd`), and/or existing saved schemas
+  (`schema_service.import_build` in the browser's Python, backed by
   `linkml_lib.pipeline.build` — the same XML/XSD→LinkML converters used
   elsewhere in this app). Earlier-selected sources win on conflicting fields.
 - **Edit** — the merged/loaded schema opens in an embedded
@@ -188,20 +196,22 @@ templates:
   sidecar (the `dhtb` service in `docker-compose.yml`, built from a pinned
   git URL — see "Pinned dependency versions" below), via its `postMessage` bridge
   (`dhtb.loadYaml` / `dhtb.exportYaml` / `dhtb.ready` / `dhtb.exported`/
-  `dhtb.error` — see its own `docs/integration-contract.md`). Saving writes the
-  exported YAML to the library (`POST /api/schemas`).
-- **Select** — choosing a schema for the sample or experiment grid
-  (`POST /api/schemas/select {role, schema_id}`) compiles it in-process
-  (`linkml_lib.dataharmonizer_compile`, the same pure-Python compiler DH's own
-  `script/linkml.py` performs) and overwrites that grid's *existing* template
-  folder's `schema.json` (`mimicc/` or `mimicc_experiment/` under
-  `server/static/dh/templates/`) plus `dh-template-registry.json`. Because
-  DataHarmonizer fetches `schema.json` over HTTP at runtime
-  (`lib/utils/templates.js: fetchSchema`), this takes effect on the next
-  iframe reload — **no DataHarmonizer bundle rebuild needed**. (Schema
-  selection only swaps the served JSON for an already-registered template
-  folder; it doesn't recompile the Node/Yarn bundle, which is built once at
-  image-build time — see "DataHarmonizer bundle build" above.)
+  `dhtb.error` — see its own `docs/integration-contract.md`). Saving validates
+  the exported YAML in Python (`schema_service.describe_schema`) and stores it in
+  the library.
+- **Select** — choosing a schema for a grid compiles it in the browser's Python
+  (`schema_service.compile_for_grid` → `linkml_lib.dataharmonizer_compile`, the
+  same pure-Python compiler DH's own `script/linkml.py` performs) and puts the
+  result in Cache Storage at `/templates/<folder>/schema.json` (`mimicc/`,
+  `mimicc_experiment/` or `study/`). A service worker (`app/static/sw.js`,
+  served at `/sw.js`) answers DataHarmonizer's fetch of that file from the
+  cache and falls back to the bundle's built default, so this takes effect on
+  the next iframe reload — **no DataHarmonizer bundle rebuild needed** — and
+  survives a browser restart with no Python loaded. Each cached schema is
+  tagged with the compiler version (`app/static/py/versions.js`); a stale
+  one is recompiled from the library on load, and deleting a grid's schema
+  reverts that grid to its default. Selections are per browser: nothing is
+  written into the shared bundle any more.
 - **Experiment schema caveat**: selecting an experiment schema that doesn't use
   the column-title contract below (`Experiment name` / `Sample alias`) breaks
   read-pairing sync — the Reads tab shows a non-blocking warning when this is
@@ -211,10 +221,10 @@ templates:
 
 The Samples tab's **Export to Prepare** button and its 30s autosave pull the current grid data
 straight out of the embedded DataHarmonizer iframe (same-origin, via
-`iframe.contentWindow.dataHarmonizer.getExportJson()`), persist it to the active session
-(`POST /api/sessions/{id}/dh-export/sample` → `<id>/dh_export.json`) and populate the `#dhExport`
+`iframe.contentWindow.dataHarmonizer.getExportJson()`), persist it to the browser workspace
+(IndexedDB) and populate the `#dhExport`
 textarea that the **Prepare** step already reads — no manual File → Save As → upload round trip. On
-reopening a session the saved export is loaded **back into the grid** via
+reload the saved export is loaded **back into the grid** via
 `iframe.contentWindow.dataHarmonizer.loadExportJson(...)`. The Reads tab's experiment-metadata panel
 (below) uses the same mechanism under `kind=experiment`.
 
@@ -276,7 +286,7 @@ in practice both files now exist permanently.
   since the Samples tab just renders whatever the schema defines, with no app-side sync/merge logic
   reading specific column titles): the app syncs/merges by fixed, expected LinkML `title:` values
   (see `EXP_KEY_TITLE`/`EXP_SAMPLE_TITLE`/`EXP_FIELD_TITLES` near the top of the "Experiment metadata
-  DataHarmonizer panel" section in `server/static/app.js`) — your schema's slots must use these exact
+  DataHarmonizer panel" section in `app/static/dataharmonizer.js`) — your schema's slots must use these exact
   titles:
 
   | Manifest field | Required `title:` |
@@ -318,7 +328,7 @@ matching row, appends a new one otherwise).
 Record tables — anything showing rows that came from ENA's **Webin Reports API** —
 are rendered by [`ena-browser`](https://github.com/EBI-Metagenomics/ena-browser),
 a standalone, framework-free `<ena-browser>` custom element built on Handsontable.
-It is vendored as a prebuilt bundle (`server/static/vendor/ena-browser/`) at a pinned
+It is vendored as a prebuilt bundle (`app/static/vendor/ena-browser/`) at a pinned
 release tag and loaded with plain `<script>`/`<link>` tags — it introduces no npm
 build step, exactly like the embedded DataHarmonizer bundle.
 
@@ -350,16 +360,16 @@ build step, exactly like the embedded DataHarmonizer bundle.
 
 **Editing is gated.** An ENA MODIFY *replaces* the whole record, so **Submit changes**
 stays locked until *Generate manifests* has built and shown the exact XML for the
-current edits (`POST /api/records/modify/preview`), and any further edit re-locks it.
-The editable fields per entity come from `/api/health` (`editable_columns`) — the
-server builds the XML, so it is the authority — plus this listing's checklist
+current edits (`ena_service.preview_modify_records`), and any further edit re-locks it.
+The editable fields per entity come from `config.json` (`editable_columns`) — the
+toolkit builds the XML, so it is the authority — plus this listing's checklist
 attributes, which arrive as `attr:`-prefixed columns when **all fields** is ticked and
 are addressed by tag in the MODIFY.
 
 **The division of responsibility.** The element is a *view*: it renders, filters,
 sorts, selects and tracks edits. It does not fetch, does not hold credentials, does
 not know about test vs production, does not persist anything, and never submits.
-This app keeps all of that — the `/api/records/*` fetches, the Webin credentials, the
+This app keeps all of that — the `ena_service.list_records` fetches, the Webin credentials, the
 debug log, the release/hold/suppress/cancel handlers (the element only *emits*
 `ena-browser:row-action`), the IndexedDB session state that stores the grid layout and
 filters, and the pairing logic that joins a selected sample to a read group.
@@ -369,10 +379,10 @@ Manifest/XML building for modifications stays in `ena-submission-toolkit`.
 change-history stack. They do not serve the submission workflow and can be added
 independently later.
 
-**Session state.** Sessions persist each grid's layout (column order, pins, hidden
+**Workspace state.** The workspace persists each grid's layout (column order, pins, hidden
 columns, widths) and filters, and never its rows: a saved row shows the status it had
-when it was saved, which after a release or a suppress is the wrong one. Restoring a
-session re-fetches instead, with the saved layout applied *before* the rows arrive —
+when it was saved, which after a release or a suppress is the wrong one. A reload
+re-fetches instead, with the saved layout applied *before* the rows arrive —
 a column the grid first meets in the data arrives hidden, and that sticks.
 
 **Usage sketch:**
@@ -380,7 +390,7 @@ a column the grid first meets in the data arrives hidden, and that sticks.
 ```js
 const grid = document.getElementById("recGrid");
 grid.applyConfig({ entity: "samples", mode: "edit", editableColumns: ["alias", "title"] });
-grid.setRows(await api(`/api/records/samples?test=${TEST}`));
+grid.setRows(await enaPy("ena_service.list_records", { entity: "samples" }));
 
 grid.addEventListener("ena-browser:change", () => refreshSubmitButton());
 grid.addEventListener("ena-browser:row-action", (e) =>
@@ -417,100 +427,99 @@ with no extra wiring; the schema editor sidecar is pushed the resolved theme by
 Refresh the vendored bundle with `task vendor:ena-browser` after bumping
 `ENA_BROWSER_REF` in `Taskfile.yml`; the two downloaded files are committed (like
 the DataHarmonizer bundle) so image builds and the Playwright suites need no
-network fetch. `pre-commit` skips `server/static/vendor/` — reformatting a bundle
+network fetch. `pre-commit` skips `app/static/vendor/` — reformatting a bundle
 corrupts it.
 
 The plan this was built from — including the collisions it had to work around —
 is in [`ENA_BROWSER_PLAN.md`](ENA_BROWSER_PLAN.md).
 
-## Submission sessions
+## Workspace
 
-All work is organised around a **named submission session**, picked or created when the app opens
-(the tabs stay locked until one is active; the header shows the current session and a **Switch…**
-button). Everything about a session is saved to disk and restored when you reopen it:
+There are no named sessions. The app keeps **one workspace** in this browser and restores it on
+load, with no prompt:
 
-- **What's persisted** — every text field, checkbox and selection, the DataHarmonizer grid data,
-  all result tables, and the Reads/Records logs. Saving is automatic (debounced as you type, plus
-  immediately after submits); the header shows "saved …". **Credentials are never saved** — re-enter
-  them after a restart.
-- **Where** — in **PostgreSQL**, owned per user (the `SubmissionSession` model: the full UI snapshot,
-  both DataHarmonizer grid exports, and the reads log are columns; the per-run reads ledger is the
-  related `ReadsRun` model). Session **names are unique per user**, so two users can have a session of
-  the same name. (This replaces the old single-user SQLite registry + per-session files on disk.)
-- **Resumable reads** — each run gets a stable, session-scoped alias. The server's upload **plan**
-  skips runs already submitted in this session or already present in ENA (checked via the Reports
-  API) and shows their existing accessions, so an interrupted batch resumes by just clicking
-  **Submit** again. Tick a run's **Re-upload** box (or the global "force re-upload all" toggle) to
-  submit it again under a fresh alias (ENA aliases are permanent, so a forced re-upload necessarily
-  creates a new experiment/run).
+- **What's persisted** — every text field, checkbox and selection, the three DataHarmonizer grids'
+  data, all result tables, the Reads/Records logs, and the reads resume ledger. Saving is automatic
+  (debounced as you type, plus immediately after submits); the header shows "saved …".
+  **Credentials are never saved** — re-enter them after a restart.
+- **Where** — IndexedDB in this browser profile, which is the **only copy**. A private window loses
+  it on close; clearing site data deletes it. Use **Download** in the header to back it up or move
+  it to another machine, **Import…** to restore one (an old `.session.json` imports too), and
+  **Clear** to start over.
+- **One at a time** — two submissions side by side in one browser profile are no longer possible.
+  Download one before clearing, and import it again later.
+- **Resumable reads** — each run is submitted under the alias `<submission prefix>_<run name>`.
+  The prefix is a field on the Reads tab, filled in on first submit if blank. The upload **plan**
+  skips runs already submitted from this workspace or already present in ENA under that alias
+  (checked via the Reports API), so an interrupted batch resumes by just clicking **Submit** again.
+  Tick a run's **Re-upload** box (or the global "force re-upload all" toggle) to submit it again
+  under a fresh alias (ENA aliases are permanent, so a forced re-upload necessarily creates a new
+  experiment/run). A browser that had sessions adopts the most recently used one on first load,
+  with its name as the prefix.
 
 ## Using it
 
-0. **Sign in** (hosted mode only) — with your app account; local mode skips this and signs you in
-   as admin automatically.
-1. **Session** — create or open a named session (required before the tabs unlock).
-2. **Credentials** — enter your Webin username/password (memory only; also forwarded to the local
+1. **Credentials** — enter your Webin username/password (memory only; also forwarded to the local
    read-helper-app when it's running, so it can upload).
-3. **Studies** — create a study → note the `PRJEB…` accession.
-4. **Samples** — enter metadata in DataHarmonizer, click **Export to Prepare** (autosaves every
+2. **Studies** — create a study → note the `PRJEB…` accession.
+3. **Samples** — enter metadata in DataHarmonizer, click **Export to Prepare** (autosaves every
    30s too — see "Export integration" above), **Prepare** (filter + rename), then **Submit** with
    checklist `ERC000025` → `ERS…`/`SAMEA…`.
-5. **Reads** — make sure the **read-helper-app** is running (the Reads tab shows "helper: running"),
-   enter the absolute path to your **local** reads directory, **Scan** (the helper lists read
-   groups), **Auto-assign samples** (or export/import the pairing as TSV), fill in
-   platform/instrument/library fields in the **experiment metadata** DataHarmonizer panel (synced
-   from the pairings — see "Experiment metadata schema" above), then **Submit reads to ENA**. The
-   browser asks the server for the manifest/plan, the helper runs webin-cli locally and streams its
-   log, and the experiment + run accessions are recorded back. Re-submit to resume.
-6. **Records** — browse account records and release/hold/suppress/cancel.
-7. **Admin** (admins only) — create/delete user accounts and reset passwords.
+4. **Reads** — pick how you want to run the upload at the top of the tab. With the
+   **local helper app**: make sure the **read-helper-app** is running (the tab shows "helper:
+   running"), enter the absolute path to your **local** reads directory and **Scan** (the helper
+   lists read groups). In **manual** mode (the default when no helper is detected): click **Choose
+   reads folder…** — only the file names are read, nothing is uploaded — and type the folder's
+   absolute path into the box, which becomes webin-cli's `-inputDir`.
+   Either way, continue with **Auto-assign samples** (or export/import the pairing as TSV) and fill
+   in platform/instrument/library fields in the **experiment metadata** DataHarmonizer panel (synced
+   from the pairings — see "Experiment metadata schema" above). Then **Submit reads to ENA** (helper
+   mode: the helper runs webin-cli locally and streams its log back, and the experiment + run
+   accessions are recorded) or **Generate submit command** (manual mode: copy the script into a
+   terminal and run it yourself). Re-submit — or re-generate — to resume; runs already in ENA are
+   skipped.
+5. **Records** — browse account records and release/hold/suppress/cancel.
 
 ## Development
 
 ```bash
-python -m venv .venv && . .venv/bin/activate
-pip install .                            # full stack: Django (ORM + HTTP), gunicorn,
-                                          # linkml, and the pinned ena_api/linkml_lib/
-                                          # ena-submission-toolkit git dependencies
-pip install pytest pytest-asyncio playwright   # or: uv sync (installs these too)
-
-# Apply migrations. With no DATABASE_URL the ORM uses a local SQLite file
-# (.data/app.db); set DATABASE_URL=postgresql://… to use Postgres instead.
-python manage.py migrate
-python manage.py bootstrap_admin         # creates/updates the admin account from env
-
-# Run the server locally (reads submission needs the local read-helper-app running;
-# other tabs work without it). DEPLOYMENT_MODE defaults to local (auto-login).
-PYTHONPATH=server:. python manage.py runserver 0.0.0.0:9000
+uv sync                                   # Python deps + dev tools (pytest, Playwright, ruff, mypy)
+python -m playwright install chromium     # for the UI tests
+task serve                                # build dist/ and serve it on http://127.0.0.1:9000
 ```
 
+Re-run `task serve` (or `task build:dist`) after editing anything under
+`app/` — the page is served from `dist/`, and `app.zip` bundles `app/*.py`.
+For the DataHarmonizer grids locally, build a bundle with
+`scripts/build_dh_template.sh`; it lands in `app/static/dh/`, which
+`build_dist.py` picks up by default.
+
 The schemas/XSDs (`schemas/`, `assets/ena_schema/`) are committed directly in
-this repo, so no extra setup is needed for them — `server/_bootstrap.py`
-resolves them by default, with `ENA_DH_SCHEMA`/`ENA_DH_XSD`/
-`ENA_DH_SCHEMAS_DIR` available to override the paths if needed.
+this repo; after adding one, run `task build:indexes` (a static host cannot list
+directories, so the page reads `index.json` files).
 
 ### Tests
 
-`pytest` (in-process Django test-client API tests + read-assignment unit tests)
-and Playwright (UI), mirroring `read-helper-app`'s patterns. No Docker or network
-needed — the webin-cli runner and `ena_service` calls are mocked.
+`pytest` runs the Python unit tests (the modules the browser runs, plus the
+build scripts) and the Playwright UI suite, which builds `dist/` once and serves
+it with `scripts/serve_dist.py`. No Docker needed: UI tests stub the page's
+`py()` calls, and the few tests that run real Pyodide need network access to
+jsDelivr and PyPI, and skip without it.
 
 The test-only packages are the `dev` dependency group in `pyproject.toml`, so
 `uv sync` installs them — and, just as importantly, does not prune them.
 
 ```bash
-uv sync                                    # or: pip install pytest pytest-asyncio playwright
-python -m playwright install chromium     # for the UI tests
-python -m pytest -q                        # all tests
-python -m pytest tests/test_server.py -q   # API only
+task test                                  # everything
+task test:ui                               # Playwright only
 ```
 
 ### Docker Compose tests
 
 `tests/test_compose_ui.py` runs Playwright against the real `docker compose`
-stack instead of the in-process fixture above — real Postgres-backed
-sessions, the real DataHarmonizer bundle, and the real `dhtb` sidecar
-container, reached over the network instead of mocked. It's the one place
+stack instead of the in-process fixture above — the nginx-served image, the real
+DataHarmonizer bundle, and the real `dhtb` sidecar container, reached over the
+network instead of mocked. It's the one place
 that exercises what `docker-compose.yml` actually assembles, at the cost of
 an image build; it can't cover the ENA-data-dependent tests in
 `tests/test_ui.py` (nothing to mock in a separate container), so it's a
@@ -526,40 +535,28 @@ COMPOSE_TEST=1 python -m pytest tests/test_compose_ui.py -q
 ## Layout
 
 ```
-server/
-  config/              Django project: settings.py, urls.py, wsgi.py (gunicorn entrypoint)
-  views_core.py         health/index, static + DH bundle/templates serving
-  views_auth.py         login/logout/me, admin user management
-  views_credentials.py  Webin credentials set/clear (POST/DELETE /api/credentials)
-  views_sessions.py     submission session CRUD + state + DH export
-  views_records.py      studies/samples/records/actions + reads plan/result
-  views_schemas.py      schema library CRUD + ENA XML/XSD import/merge + grid selection
-  middleware.py         skips Django's CSRF checks in local (single-user) mode
-  auth.py               accounts, login sessions, admin bootstrap; (user, error_response) view helpers
-  credentials_store.py  per-user Webin credentials, cache-backed (Redis in hosted mode, never DB)
-  orm/                  Django app: models.py (User/LoginSession/SubmissionSession/ReadsRun), migrations/,
-                        management/commands/bootstrap_admin.py
-  dbsetup.py            one-time django.setup() bootstrap
-  ena_service.py        studies/samples/records/actions — MIMICC glue only; every ENA request is made by
-                        ena-submission-toolkit (records.py) over ena-api-client, never here
-  read_assign.py        scan / suggest / manifest (text) build for reads
-  session_store.py      submission sessions + reads ledger, Django-ORM-backed, owner-scoped
-  schema_service.py     schema library: list/save/delete, ENA XML/XSD import/merge, grid selection
-  _bootstrap.py         locates the committed schema/XSD assets (schemas/, assets/ena_schema/;
-                        sys.path is no longer needed for ena_api/linkml_lib/
-                        ena-submission-toolkit — they're pinned pip dependencies, see pyproject.toml)
-  static/              single-page UI (index.html, app.js) + DH bundle (dh/, volume-mounted)
-manage.py          Django management entrypoint (migrate, bootstrap_admin)
-schemas/           committed MIMICC LinkML schemas (mimicc_sample.yaml, mimicc_experiment.yaml)
-assets/ena_schema/ committed ENA/SRA XSDs + checklist XMLs (checklists/ filled by fetch_ena_checklists.sh)
+app/               the app's source: the page and the Python it runs in the browser
+  static/            the page: index.html, *.js, sw.js, vendor/ena-browser/, py/ (worker.js, versions.js)
+  pyodide/           browser-only Python: ena_bridge.py (httpx over sync XHR, py() entry point),
+                     shims/pendulum.py
+  ena_service.py     studies/samples/records/actions/reads plan — MIMICC glue only; every ENA request
+                     is made by ena-submission-toolkit over ena-api-client, never here
+  read_assign.py     read grouping / suggest / manifest text / upload plan
+  schema_service.py  schema naming, ENA XML/XSD import/merge, grid compile
+  _bootstrap.py      locates schemas/ and assets/ena_schema/ (under / in the browser)
+schemas/           committed MIMICC LinkML schemas + index.json
+assets/ena_schema/ committed ENA/SRA XSDs + checklist XMLs + index.json
 scripts/
-  fetch_ena_checklists.sh fetch the full set of public ENA sample-checklist XMLs
-  build_dh_template.sh   build the embedded DataHarmonizer bundle (local dev)
-  server_entrypoint.sh   seeds the bind-mounted DH bundle dir on first run, migrates, bootstraps admin
+  build_dist.py            build dist/ (the static site)
+  serve_dist.py            no-cache static server for local use and tests
+  build_py_bundle.py       build static/py/app.zip (the Python the browser runs)
+  build_static_indexes.py  write schemas/index.json + assets/ena_schema/index.json
+  fetch_ena_checklists.sh  fetch the full set of public ENA sample-checklist XMLs
+  build_dh_template.sh     build the embedded DataHarmonizer bundle (local dev)
+docker/            nginx.conf + write-config.sh for the runtime image
 tests/             pytest + Playwright
-Dockerfile             builds the main server image (includes a dh-builder stage and
-                       pinned git-clone stages for DataHarmonizer/dh-builder)
-docker-compose.yml
+Dockerfile         DataHarmonizer bundle → site build → nginx
+docker-compose.yml the app + the dhtb sidecar
 ```
 
 The Dockerfile for the `dh-builder` image (shared with
@@ -584,7 +581,7 @@ All sibling-repo code is pulled at a fixed git tag or full commit SHA, never a l
   in `[project.dependencies]`.
 - **`Taskfile.yml`** — `ENA_BROWSER_REF` (v0.1.2), the `ena-browser` release whose
   `ena-browser.iife.js` + `ena-browser.css` are vendored into
-  `server/static/vendor/ena-browser/` and **committed**. Bump the ref, then
+  `app/static/vendor/ena-browser/` and **committed**. Bump the ref, then
   `task vendor:ena-browser`, then commit the two files.
 - **`Dockerfile`** — `DATAHARMONIZER_REF` / `DH_BUILDER_REF` build
   args, and **`docker-compose.yml`** — the `read-helper-app` and `dhtb` services'
@@ -601,18 +598,12 @@ the repo root finds them all).
 
 ## Notes
 
-- **Webin credentials** are never written to the database or logged. They're
-  held per-user in a cache (`server/credentials_store.py`) — in-process in local
-  mode, or Redis in hosted mode (with persistence disabled, so they're still
-  never written to disk) — and re-entered after a restart. They are also
-  forwarded to the local read-helper-app (in its memory only) so it can upload.
-- **App accounts** are separate from Webin credentials. The admin account is
-  (re)created from `ADMIN_USERNAME`/`ADMIN_PASSWORD` on every boot, so those env
-  vars are authoritative for the admin password — change them before hosting.
-- **Reads** go through webin-cli (Docker) on the **user's machine** via the
-  read-helper-app, **not** the JAR path in `submit_reads.py` (that module is
-  intentionally not imported — avoids its mgnify-toolkit dependency). The hosted
-  server has no access to read files: no Docker socket, `/hostroot`, or reads
-  mount.
-- **Migrations**: `python manage.py makemigrations` / `migrate` (the entrypoint
-  runs `migrate` automatically on startup).
+- **Webin credentials** live in the browser tab (sessionStorage) and are never
+  written to disk or logged. They go to ENA from the browser's Python and, in
+  helper mode, to the local read-helper-app (in its memory only) so it can upload.
+- **Reads** go through webin-cli on the **user's machine** — via the
+  read-helper-app, or a command the user runs — **not** the JAR path in
+  `submit_reads.py` (that module is intentionally not imported — avoids its
+  mgnify-toolkit dependency). Nothing but that machine ever touches read files.
+- **ENA's CORS** is its configuration, not a contract: the app breaks outright if
+  it is withdrawn. Re-probe before a release — see `STATIC_BROWSER_PLAN.md` §0.1.

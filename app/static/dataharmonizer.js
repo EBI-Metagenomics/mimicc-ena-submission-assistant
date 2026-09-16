@@ -1,0 +1,425 @@
+"use strict";
+
+// ---------------------------------------------------------------------------
+// DataHarmonizer export integration (sample grid: button + autosave; the
+// experiment grid below follows the same pattern, parameterized by frame id).
+// ---------------------------------------------------------------------------
+const DH_AUTOSAVE_INTERVAL_MS = 30000;
+let dhAutosaveTimer = null;
+let expDhAutosaveTimer = null;
+let studyDhAutosaveTimer = null;
+
+// Each DataHarmonizer iframe is same-origin, so its window.dataHarmonizer
+// hook (added to the DataHarmonizer fork — see web/index.js there) is
+// directly reachable. Returns null until that grid has finished loading.
+function dataHarmonizerApi(frameId) {
+  const frame = $(frameId);
+  const win = frame && frame.contentWindow;
+  return win && win.dataHarmonizer && win.dataHarmonizer.ready ? win.dataHarmonizer : null;
+}
+function dhApi() { return dataHarmonizerApi("dhFrame"); }
+function expDhApi() { return dataHarmonizerApi("expDhFrame"); }
+function studyDhApi() { return dataHarmonizerApi("studyDhFrame"); }
+
+// Handsontable's internal "isListening" state (see core.js's mousedown
+// handler for the full story) is backed by real focus calls made from the
+// iframe's own JS — so from in here we can neutralize it directly: no-op
+// that iframe's own focus calls unless core.js has marked it as the one the
+// user actually clicked into (`dataset.userActive`). Confirmed via a
+// live-captured stack trace that the actual reclaim goes through
+// Handsontable's TextEditor.prototype.focus(), which calls
+// `this.TEXTAREA.select()` rather than `.focus()` — its own comment says
+// this is deliberate, "for IME support" — fired from prepareEditor() during
+// a border/selection re-render (outsideClickDeselects:false keeps a cell
+// "selected" indefinitely, so any later re-render re-arms this). `.select()`
+// focuses its element as a native side effect while going through neither
+// `HTMLElement.prototype.focus` nor `window.focus`, so it needs its own
+// patch. Re-applied on every load since a fresh navigation gets fresh
+// window/prototypes to patch.
+function disableIframeFocusWhenInactive(frame) {
+  try {
+    const win = frame.contentWindow;
+    if (!win || win.__mimiccFocusPatched) return;
+    // Capturing-phase listener on the iframe's OWN document: guaranteed to
+    // run before Handsontable's own rootElement mousedown handler (same
+    // document, capture always precedes target/bubble) — unlike setting this
+    // from the parent document's mousedown handler, which raced Handsontable's
+    // internal selection setup and lost, blocking legitimate cell selection.
+    win.document.addEventListener("mousedown", () => { frame.dataset.userActive = "1"; }, true);
+    const proto = win.HTMLElement && win.HTMLElement.prototype;
+    if (proto) {
+      const nativeElFocus = proto.focus;
+      proto.focus = function (...args) {
+        if (frame.dataset.userActive === "1") return nativeElFocus.apply(this, args);
+      };
+    }
+    [win.HTMLTextAreaElement, win.HTMLInputElement].forEach((ctor) => {
+      if (!ctor) return;
+      const nativeSelect = ctor.prototype.select;
+      ctor.prototype.select = function (...args) {
+        if (frame.dataset.userActive === "1") return nativeSelect.apply(this, args);
+      };
+    });
+    const nativeWinFocus = win.focus.bind(win);
+    win.focus = (...args) => {
+      if (frame.dataset.userActive === "1") return nativeWinFocus(...args);
+    };
+    win.__mimiccFocusPatched = true;
+  } catch { /* cross-origin — nothing we can do from here */ }
+}
+
+function formatSavedAt(isoTs) {
+  return isoTs ? new Date(isoTs).toLocaleTimeString() : "never";
+}
+
+function setDhSavedIndicator(isoTs) {
+  $("dhSavedIndicator").textContent = "Last saved: " + formatSavedAt(isoTs);
+}
+function setExpDhSavedIndicator(isoTs) {
+  $("expDhSavedIndicator").textContent = "Last saved: " + formatSavedAt(isoTs);
+}
+function setStudyDhSavedIndicator(isoTs) {
+  $("studyDhSavedIndicator").textContent = "Last saved: " + formatSavedAt(isoTs);
+}
+
+async function saveDhExport(exportJson, { silent = false } = {}) {
+  try {
+    const savedAt = await dbSaveDhExport("sample", exportJson);
+    if (document.activeElement !== $("dhExport")) $("dhExport").value = JSON.stringify(exportJson);
+    setDhSavedIndicator(savedAt);
+    scheduleSave();
+    if (!silent) banner("prepBanner", true, "Exported from DataHarmonizer.");
+  } catch (e) {
+    if (!silent) banner("prepBanner", false, e.message);
+  }
+}
+
+function exportDhNow() {
+  const dh = dhApi();
+  if (!dh) { banner("prepBanner", false, "DataHarmonizer isn't ready yet."); return; }
+  saveDhExport(dh.getExportJson());
+}
+
+function autosaveDhExport() {
+  const dh = dhApi();
+  if (!dh) return; // not loaded — skip this tick silently
+  saveDhExport(dh.getExportJson(), { silent: true });
+}
+
+// Push a saved export object back into the DH grid once the iframe is ready.
+function loadDhGridWhenReady(exportObj) {
+  if (!exportObj) return;
+  const poll = setInterval(() => {
+    const dh = dhApi();
+    if (!dh || !dh.loadExportJson) return;
+    clearInterval(poll);
+    try { dh.loadExportJson(exportObj); } catch { /* schema mismatch — leave grid empty */ }
+  }, 500);
+  setTimeout(() => clearInterval(poll), 15000); // give up after 15s
+}
+
+function startDhAutosave() {
+  const poll = setInterval(() => {
+    if (!dhApi()) return;
+    clearInterval(poll);
+    if (dhAutosaveTimer) clearInterval(dhAutosaveTimer);
+    dhAutosaveTimer = setInterval(autosaveDhExport, DH_AUTOSAVE_INTERVAL_MS);
+  }, 500);
+}
+$("dhFrame").addEventListener("load", startDhAutosave);
+$("dhFrame").addEventListener("load", () => stabilizeDataHarmonizerFrameRows("dhFrame"));
+$("dhFrame").addEventListener("load", markDhFrameLoaded);
+$("dhFrame").addEventListener("load", () => disableIframeFocusWhenInactive($("dhFrame")));
+
+// ---------------------------------------------------------------------------
+// Experiment metadata DataHarmonizer panel (Reads tab)
+//
+// The schema for this grid doesn't exist yet (the user authors it) — these
+// constants are the contract it must follow (LinkML slot `title:` values)
+// for the pairing-sync and submit-time merge below to find the right
+// columns. Documented in README "Experiment metadata schema".
+// ---------------------------------------------------------------------------
+const EXP_KEY_TITLE = "Experiment name";       // matches a pairing row's NAME
+const EXP_SAMPLE_TITLE = "Sample alias";       // matches a pairing row's SAMPLE
+const EXP_FIELD_TITLES = {                     // manifest field -> experiment-DH column title
+  PLATFORM: "Platform",
+  INSTRUMENT: "Instrument",
+  LIBRARY_SOURCE: "Library source",
+  LIBRARY_SELECTION: "Library selection",
+  LIBRARY_STRATEGY: "Library strategy",
+  INSERT_SIZE: "Insert size",
+  LIBRARY_NAME: "Library name",
+  DESCRIPTION: "Description",
+};
+
+let EXP_TEMPLATE_PATH = null; // "mimicc_experiment/<schema name>", or null if not built
+const DH_FRAME_READY_TIMEOUT_MS = 20000;
+
+function dhRoleConfig(role) {
+  if (role === "sample") {
+    return { frameId: "dhFrame", missingId: "dhMissing", bannerId: "prepBanner" };
+  }
+  if (role === "study") {
+    return { frameId: "studyDhFrame", missingId: "studyDhMissing", bannerId: "studyPrepBanner" };
+  }
+  return { frameId: "expDhFrame", missingId: "expDhMissing", bannerId: "readsBanner" };
+}
+
+function dhFrameUrl(templatePath, token) {
+  const params = new URLSearchParams({ template: templatePath, t: token });
+  return `/dh/?${params.toString()}`;
+}
+
+async function fetchDhRegistry() {
+  const res = await fetch(`/dh/dh-template-registry.json?t=${Date.now()}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`DataHarmonizer registry unavailable (HTTP ${res.status}).`);
+  return res.json();
+}
+
+function pointDhFrameAtTemplate(role, templatePath) {
+  const { frameId, missingId } = dhRoleConfig(role);
+  const frame = $(frameId);
+  if (!frame || !templatePath) return;
+  const token = String(Date.now());
+  frame.dataset.expectedDhLoad = token;
+  delete frame.dataset.loadedDhLoad;
+  frame.src = dhFrameUrl(templatePath, token);
+  if ($(missingId)) $(missingId).style.display = "none";
+  return token;
+}
+
+function markDhFrameLoaded(e) {
+  const frame = e.target;
+  if (frame?.dataset?.expectedDhLoad) {
+    frame.dataset.loadedDhLoad = frame.dataset.expectedDhLoad;
+  }
+}
+
+function waitForDhFrameReady(role, templatePath, token) {
+  const { frameId } = dhRoleConfig(role);
+  const frame = $(frameId);
+  const started = Date.now();
+  return new Promise((resolve, reject) => {
+    const poll = setInterval(() => {
+      try {
+        if (token && frame?.dataset?.loadedDhLoad !== token) return;
+        const win = frame?.contentWindow;
+        const doc = frame?.contentDocument;
+        if (win?.dataHarmonizer?.ready && doc?.querySelector(".handsontable")) {
+          clearInterval(poll);
+          resolve();
+          return;
+        }
+      } catch (e) {
+        clearInterval(poll);
+        reject(e);
+        return;
+      }
+      if (Date.now() - started > DH_FRAME_READY_TIMEOUT_MS) {
+        clearInterval(poll);
+        reject(new Error(`DataHarmonizer did not finish loading "${templatePath}". Check the browser console and server logs.`));
+      }
+    }, 250);
+  });
+}
+
+// Point both DH iframes at an explicit `?template=<folder>/<schema name>`,
+// looked up from the build's own registry rather than hardcoded — and
+// required even for the sample grid (the default, query-param-less `/dh/`
+// only works when exactly one template is registered; with two or more, the
+// Toolbar's own Template <select> can end up loading a different one than
+// AppContext's own startup reload did, leaving window.dataHarmonizer
+// pointing at no current grid).
+async function initDhFrames() {
+  let registry = {};
+  try {
+    registry = await fetchDhRegistry();
+  } catch (e) {
+    console.error("Failed to load DataHarmonizer template registry", e);
+    /* dh-default not built at all — fall through, both show "missing" */
+  }
+
+  if (registry.mimicc) {
+    pointDhFrameAtTemplate("sample", `mimicc/${registry.mimicc}`);
+  }
+  if (registry.study) {
+    pointDhFrameAtTemplate("study", `study/${registry.study}`);
+  } else {
+    $("studyDhMissing").style.display = "block";
+  }
+  if (registry.mimicc_experiment) {
+    EXP_TEMPLATE_PATH = `mimicc_experiment/${registry.mimicc_experiment}`;
+    pointDhFrameAtTemplate("experiment", EXP_TEMPLATE_PATH);
+    checkExpSchemaColumns();
+  } else {
+    $("expDhMissing").style.display = "block";
+  }
+  return registry;
+}
+
+// Warn (non-blocking) when the experiment schema doesn't use the exact
+// column titles the pairing-sync (syncPairingsToExperimentDh) and submit-time
+// merge (mergeExperimentMetadata) rely on — see README "Sample and
+// experiment metadata schemas" for the column-title contract.
+async function checkExpSchemaColumns() {
+  const el = $("expSchemaWarning");
+  el.style.display = "none";
+  el.textContent = "";
+  try {
+    const folder = EXP_TEMPLATE_PATH.split("/")[0];
+    const schema = await (await fetch(`/templates/${folder}/schema.json?t=${Date.now()}`, { cache: "no-store" })).json();
+    const titles = new Set(
+      Object.values(schema.classes || {}).flatMap((c) => Object.values(c.attributes || {}).map((a) => a.title))
+    );
+    const missing = [EXP_KEY_TITLE, EXP_SAMPLE_TITLE].filter((t) => !titles.has(t));
+    if (missing.length) {
+      el.className = "vf-banner vf-banner--alert vf-banner--warning";
+      el.style.display = "block";
+      el.textContent = `This experiment schema is missing the column(s) ${missing.join(", ")} — read-pairing sync and submission won't be able to match rows by experiment name/sample.`;
+    }
+  } catch { /* best-effort only */ }
+}
+
+async function saveExpDhExport(exportJson, { silent = false } = {}) {
+  try {
+    const savedAt = await dbSaveDhExport("experiment", exportJson);
+    setExpDhSavedIndicator(savedAt);
+    scheduleSave();
+    if (!silent) banner("readsBanner", true, "Saved experiment metadata.");
+  } catch (e) {
+    if (!silent) banner("readsBanner", false, e.message);
+  }
+}
+
+function exportExpDhNow() {
+  const dh = expDhApi();
+  if (!dh) { banner("readsBanner", false, "Experiment DataHarmonizer isn't ready yet."); return; }
+  saveExpDhExport(dh.getExportJson());
+}
+
+function autosaveExpDhExport() {
+  const dh = expDhApi();
+  if (!dh) return;
+  saveExpDhExport(dh.getExportJson(), { silent: true });
+}
+
+function loadExpDhGridWhenReady(exportObj) {
+  if (!exportObj) return;
+  const poll = setInterval(() => {
+    const dh = expDhApi();
+    if (!dh || !dh.loadExportJson) return;
+    clearInterval(poll);
+    try { dh.loadExportJson(exportObj); } catch { /* schema mismatch — leave grid empty */ }
+  }, 500);
+  setTimeout(() => clearInterval(poll), 15000);
+}
+
+function startExpDhAutosave() {
+  const poll = setInterval(() => {
+    if (!expDhApi()) return;
+    clearInterval(poll);
+    if (expDhAutosaveTimer) clearInterval(expDhAutosaveTimer);
+    expDhAutosaveTimer = setInterval(autosaveExpDhExport, DH_AUTOSAVE_INTERVAL_MS);
+    EXP_SYNCED.clear();           // fresh grid — nothing in it is known-synced
+    syncPairingsToExperimentDhNow(); // catch up on any pairings made before this grid was ready
+  }, 500);
+}
+$("expDhFrame").addEventListener("load", startExpDhAutosave);
+$("expDhFrame").addEventListener("load", () => stabilizeDataHarmonizerFrameRows("expDhFrame"));
+$("expDhFrame").addEventListener("load", markDhFrameLoaded);
+$("expDhFrame").addEventListener("load", () => disableIframeFocusWhenInactive($("expDhFrame")));
+
+async function saveStudyDhExport(exportJson, { silent = false } = {}) {
+  try {
+    const savedAt = await dbSaveDhExport("study", exportJson);
+    setStudyDhSavedIndicator(savedAt);
+    scheduleSave();
+    if (!silent) banner("studyPrepBanner", true, "Saved study metadata.");
+  } catch (e) {
+    if (!silent) banner("studyPrepBanner", false, e.message);
+  }
+}
+
+function exportStudyDhNow() {
+  const dh = studyDhApi();
+  if (!dh) { banner("studyPrepBanner", false, "Study DataHarmonizer isn't ready yet."); return; }
+  saveStudyDhExport(dh.getExportJson());
+}
+
+function autosaveStudyDhExport() {
+  const dh = studyDhApi();
+  if (!dh) return;
+  saveStudyDhExport(dh.getExportJson(), { silent: true });
+}
+
+function loadStudyDhGridWhenReady(exportObj) {
+  if (!exportObj) return;
+  const poll = setInterval(() => {
+    const dh = studyDhApi();
+    if (!dh || !dh.loadExportJson) return;
+    clearInterval(poll);
+    try { dh.loadExportJson(exportObj); } catch { /* schema mismatch — leave grid empty */ }
+  }, 500);
+  setTimeout(() => clearInterval(poll), 15000);
+}
+
+function startStudyDhAutosave() {
+  const poll = setInterval(() => {
+    if (!studyDhApi()) return;
+    clearInterval(poll);
+    if (studyDhAutosaveTimer) clearInterval(studyDhAutosaveTimer);
+    studyDhAutosaveTimer = setInterval(autosaveStudyDhExport, DH_AUTOSAVE_INTERVAL_MS);
+  }, 500);
+}
+$("studyDhFrame").addEventListener("load", startStudyDhAutosave);
+$("studyDhFrame").addEventListener("load", () => stabilizeDataHarmonizerFrameRows("studyDhFrame"));
+$("studyDhFrame").addEventListener("load", markDhFrameLoaded);
+$("studyDhFrame").addEventListener("load", () => disableIframeFocusWhenInactive($("studyDhFrame")));
+
+// Push each pairing row's NAME+SAMPLE into the experiment grid, touching
+// only those two columns (upsertRow) so anything already filled in for that
+// row — manually, or via the schema's own ifabsent defaults — is preserved.
+//
+// Each upsertRow is a Handsontable round trip, so re-pushing every row on
+// every pairing edit made the grid crawl. Two fixes: only push rows whose
+// NAME/SAMPLE actually changed since the last push (EXP_SYNCED), and coalesce
+// bursts of edits into one pass. The auto-sync checkbox turns the automatic
+// pass off entirely; the Update button forces one.
+const EXP_SYNCED = new Map();  // NAME -> last SAMPLE pushed to the grid
+let expSyncTimer = null;
+
+function expAutoSyncOn() { return $("expDhAutoSync")?.checked !== false; }
+
+function syncPairingsToExperimentDh() {
+  if (!expAutoSyncOn()) return;
+  if (expSyncTimer) clearTimeout(expSyncTimer);
+  expSyncTimer = setTimeout(() => { expSyncTimer = null; syncPairingsToExperimentDhNow(); }, 200);
+}
+
+function syncPairingsToExperimentDhNow() {
+  const dh = expDhApi();
+  if (!dh) return 0;
+  const entries = [];
+  RUN_ROWS.forEach((row) => {
+    if (!row.NAME) return;
+    const sample = row.SAMPLE || "";
+    if (EXP_SYNCED.get(row.NAME) === sample) return;
+    entries.push({ key: row.NAME, values: { [EXP_SAMPLE_TITLE]: sample } });
+  });
+  if (!entries.length) return 0;
+  try {
+    // upsertRows does the whole batch in one render/validation pass. Older
+    // bundles only have the per-row call — fall back rather than fail.
+    if (dh.upsertRows) dh.upsertRows(EXP_KEY_TITLE, entries);
+    else entries.forEach((e) => dh.upsertRow(EXP_KEY_TITLE, e.key, e.values));
+  } catch { return 0; }
+  entries.forEach((e) => EXP_SYNCED.set(e.key, e.values[EXP_SAMPLE_TITLE]));
+  return entries.length;
+}
+
+/** Update button: sync regardless of the auto-sync toggle. */
+function updateExperimentDhNow() {
+  if (!expDhApi()) { banner("readsBanner", false, "Experiment DataHarmonizer isn't ready yet."); return; }
+  const pushed = syncPairingsToExperimentDhNow();
+  banner("readsBanner", true, pushed ? `Updated ${pushed} experiment row(s).` : "Experiment metadata already up to date.");
+}

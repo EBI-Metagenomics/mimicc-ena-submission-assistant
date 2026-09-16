@@ -2,7 +2,7 @@
 # one) are committed as-is: reformatting them corrupts them, and the size
 # ceiling is not theirs to meet.
 # assets/ena_schema/ are upstream ENA XSDs, vendored verbatim.
-exclude: '^(server/static/vendor/|assets/ena_schema/)'
+exclude: '^(app/static/vendor/|assets/ena_schema/)'
 
 # Standardised across the MIMICC/ENA repos. When bumping a rev, bump it in all
 # of them together so a file formatted in one repo is not reformatted by another.
@@ -47,7 +47,7 @@ repos:
         entry: uv run --frozen mypy
         language: system
         pass_filenames: false
-        args: ["server", "tests"]
+        args: ["app", "tests", "scripts"]
 
       # Runs on push (not every commit) since it is slower than the lint hooks
       # above.

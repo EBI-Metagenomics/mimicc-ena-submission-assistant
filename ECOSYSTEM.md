@@ -21,18 +21,19 @@ End to end, the ecosystem does this:
 4. **Scan local sequencing reads**, group paired-end mates, and assign each read
    group to a sample/experiment.
 5. **Submit reads** via ENA's `webin-cli`, run on the *user's own machine* so the
-   large data files never pass through the server.
+   large data files never leave it except to ENA.
 
-The pieces are layered: a thin **vanilla-JS UI** on top of a stateless
-**Python/Django** application, which orchestrates a set of **Python libraries** (ENA
-transport, LinkML utilities, submission builders). Two companions sit beside it: a
-**schema editor** (dhtb) run as a Docker Compose service, and a **native desktop
-reads uploader** (read-helper-app) that the browser drives directly. A **bundle
-builder** (dh-builder) runs at image build time.
+The pieces are layered: a **static site** — a vanilla-JS UI plus Python that runs
+in the browser (Pyodide) — which orchestrates a set of **Python libraries** (ENA
+transport, LinkML utilities, submission builders) and calls ENA directly. Two companions sit beside it: a
+**schema editor** (dhtb) run as a Docker Compose service, and an *optional* **native
+desktop reads uploader** (read-helper-app) that the browser drives directly —
+optional because the Reads tab can instead hand the user a `webin-cli` command to
+run themselves. A **bundle builder** (dh-builder) runs at image build time.
 
 ```
                 ┌───────────────────────────────────────────────┐
-                │  mimicc-ena-submission-assistant (Django app) │
+                │  mimicc-ena-submission-assistant (static site)│
                 │  vanilla-JS SPA  +  embedded DataHarmonizer   │
                 └───────┬────────────────┬───────────────┬──────┘
                         │ imports        │ postMessage   │ HTTP (from browser)
@@ -64,7 +65,7 @@ builder** (dh-builder) runs at image build time.
 
 | Project | Type | Language(s) | Purpose | Key dependencies | Consumed by |
 |---|---|---|---|---|---|
-| **mimicc-ena-submission-assistant** | Web app | Python/Django + vanilla JS | The product: end-to-end UI for studies, samples, reads submission to ENA | ena-api-client, ena-submission-toolkit, linkml-lib, DataHarmonizer, dh-builder, ena-browser, read-helper-app, dhtb | — (top of stack) |
+| **mimicc-ena-submission-assistant** | Web app (static) | vanilla JS + Python in the browser (Pyodide) | The product: end-to-end UI for studies, samples, reads submission to ENA | ena-api-client, ena-submission-toolkit, linkml-lib, DataHarmonizer, dh-builder, ena-browser, read-helper-app, dhtb | — (top of stack) |
 | **dataharmonizer-template-builder** (dhtb) | Web app / embeddable component | Python/Django + React/TypeScript/Vite | Interactive editor for LinkML DataHarmonizer schemas (YAML ↔ tables ↔ schema.json) | linkml-lib, DataHarmonizer, dh-builder, Handsontable | mimicc-assistant (iframe + postMessage) |
 | **ena-api-client** | Library | Python | Typed client for ENA Webin Submission (XML) and Reports (JSON) APIs | httpx, pydantic | toolkit, assistant |
 | **linkml-lib** | Library | Python | LinkML utilities: schema I/O, editable-table conversion, XML/XSD↔LinkML, DataHarmonizer compilation, diagnostics | linkml, linkml-runtime, PyYAML | toolkit, assistant, dhtb |
@@ -106,31 +107,36 @@ Handsontable-based record grid the assistant embeds.
 
 ### 4.1 mimicc-ena-submission-assistant
 
-The product. A **Django** application (Python 3.11+, Django 5.x, gunicorn/WSGI)
-serving a **single-page vanilla-JavaScript** UI with **no Node/npm build step**. It is
-**single-user and local-only**: the container is bound to loopback, and the server is
-**stateless** — no database, no auth, no Django sessions, no CSRF middleware. All
-persistent state lives in the browser.
+The product. A **static site** — no application server — serving a
+**single-page vanilla-JavaScript** UI with **no Node/npm build step**, whose domain
+logic is the Python submission stack running **in the browser** (Pyodide). It is
+**single-user**: all persistent state lives in the browser, and the only server is
+whatever serves the files (nginx in the Docker image, `scripts/serve_dist.py` locally).
 
-- **Backend** (`server/`): `views_core.py` (index, `/api/health`, static and `/dh`
-  serving), `views_records.py` (study/sample prepare + submit, record listing,
-  MODIFY, lifecycle actions, reads suggest/plan/result), `views_schemas.py` (schema
-  library). `ena_service.py` is MIMICC glue over `ena-submission-toolkit` (its
-  `records.py` owns listing, MODIFY and lifecycle actions) — no ENA request is made
-  directly in this repo; `schema_service.py` wraps `linkml-lib` and compiles schemas
-  into the fixed DH template folders; `read_assign.py` groups reads and builds
-  webin-cli manifests; `webin_creds.py` turns per-request `X-Webin-Username` /
-  `X-Webin-Password` headers into credentials (nothing is stored server-side).
-- **Frontend** (`server/static/`): `index.html` shell plus per-concern scripts
-  (`core.js` API clients, `credentials.js`, `sessions.js`, `records.js`,
+- **Python in the browser** (`app/pyodide/`, `app/static/py/`): every ENA
+  call — study/sample prepare + submit, record listing, MODIFY, lifecycle actions,
+  reads suggest/plan/result — runs in a Pyodide Web Worker. The page calls
+  `py("module.function", kwargs)`; `ena_bridge.py` routes `httpx` over
+  synchronous XHR, so requests go from the browser straight to ENA (CORS-enabled)
+  with the Webin credentials and never touch this app's server. `ena_service.py`
+  is MIMICC glue over `ena-submission-toolkit` (its `records.py` owns listing,
+  MODIFY and lifecycle actions) — no ENA request is made directly in this repo;
+  `read_assign.py` groups reads and builds webin-cli manifests and the upload plan.
+- **Build** (`scripts/build_dist.py`): writes `dist/` — the page, `sw.js`,
+  `config.json` (helper port, dhtb URL, bundle availability, editable columns),
+  `app.zip`, schemas/XSDs and the DataHarmonizer bundle. `schema_service.py` wraps
+  `linkml-lib`: it names, imports and compiles schemas for the fixed DH template
+  folders, in the browser; a service worker serves each grid's compiled schema.
+- **Frontend** (`app/static/`): `index.html` shell plus per-concern scripts
+  (`core.js` API clients, `credentials.js`, `workspace.js`, `records.js`,
   `samples.js`, `reads.js`, `schema.js`, `dataharmonizer.js`, `theme.js`,
-  `boot.js`). Submission sessions and the reads resume ledger are kept in
+  `boot.js`). The workspace (all entered state) and the reads resume ledger are kept in
   **IndexedDB**; Webin credentials in **sessionStorage** for the tab only. The
-  DataHarmonizer bundle is built in Docker and volume-mounted at
-  `server/static/dh/`; `ena-browser` is vendored under `server/static/vendor/`.
+  DataHarmonizer bundle is built in Docker and copied into the site at `/dh/`; `ena-browser` is vendored under `app/static/vendor/`.
 - **Schema artifacts** committed in the repo: `schemas/*.yaml` (LinkML) and
   `assets/ena_schema/` (ENA/SRA XSDs and checklist XMLs). User-saved schemas live in
-  the `mimicc-schemas` volume.
+  the browser (IndexedDB); the grids' compiled schemas in Cache Storage, served
+  by a service worker.
 - **Pinned sibling libraries** (in `pyproject.toml`, no submodules):
   `ena-api-client @ ...@v0.1.0`, `linkml-lib @ ...@v0.1.0`,
   `ena-submission-toolkit @ ...@v0.1.0`.
@@ -199,6 +205,9 @@ these directly.
 
 A native **Electron** desktop app (**TypeScript/Node**) that runs `webin-cli` read
 uploads from the user's machine — large read files never reach the assistant server.
+It is one of two routes: the assistant's Reads tab also has a **manual mode** that
+needs no helper at all, listing the reads folder with a plain browser directory
+input and rendering the same plan as a `webin-cli` script the user runs themselves.
 The main process starts a small Node HTTP server bound to **127.0.0.1:9100**; the
 assistant's *browser* UI detects it on localhost and drives it with cross-origin
 requests (the assistant server never talks to it).
@@ -243,7 +252,7 @@ a **Handsontable** grid with per-column filtering and sorting, column pinning/
 reordering/hiding, row selection, host-driven dynamic columns, and an optional edit
 mode that emits a change set. Written in **TypeScript**, built with **Vite** in
 library mode into an ESM bundle (Handsontable as a peer dependency) and a
-self-contained **IIFE** bundle the assistant vendors under `server/static/vendor/`
+self-contained **IIFE** bundle the assistant vendors under `app/static/vendor/`
 the same way it vendors the DataHarmonizer bundle — no npm build step is introduced.
 
 It is deliberately a *view*: it never talks to ENA's submission API, never builds a
@@ -254,8 +263,8 @@ host feeds to `ena-submission-toolkit`'s MODIFY path), `row-action` (release/hol
 suppress/cancel, executed by the host), `filter-change` and `layout-change`. Status
 of "cancelled"/"suppressed" include/exclude toggles are built in, because every
 consumer wants them. In the assistant it backs the Studies, Samples, Reads,
-sample-pairing and Records grids, with rows supplied by the server's
-`/api/records/*` endpoints.
+sample-pairing and Records grids, with rows supplied by
+`ena_service.list_records` running in the browser.
 
 Repo: `EBI-Metagenomics/ena-browser`. The assistant's adoption plan lives in this
 repo's `ENA_BROWSER_PLAN.md`.
@@ -264,35 +273,38 @@ repo's `ENA_BROWSER_PLAN.md`.
 
 ## 5. Language & tool choices in the two large apps — and why
 
-Both large apps share a **Python/Django** backend for the same reason: *all* of the
-domain logic — the ENA HTTP client, the LinkML utilities, the submission builders —
-is Python, so the backend can call it directly with no FFI or service boundary. The
-interesting difference is the **frontend**.
+Both large apps run their domain logic in **Python** for the same reason: *all* of
+it — the ENA HTTP client, the LinkML utilities, the submission builders — is Python.
+dhtb calls it from a Django backend; the assistant runs it in the browser. The other
+difference is the **frontend**.
 
-### mimicc-ena-submission-assistant — Python backend, *vanilla JS* frontend
+### mimicc-ena-submission-assistant — Python *in the browser*, *vanilla JS* frontend
 
-- **Python/Django** for everything server-side: HTTP views and routing, static
-  serving, and orchestration of `ena-api-client`, `ena-submission-toolkit` and
-  `linkml-lib`. Chosen because the submission stack is already Python. The server is
-  kept stateless — sessions and credentials live in the browser — so it needs no
-  database or cache service.
+- **Python, run in the browser** (Pyodide, in a Web Worker), for all domain work:
+  orchestrating `ena-api-client`, `ena-submission-toolkit` and `linkml-lib`. Chosen
+  because the submission stack is already Python and tested; `httpx` runs over
+  synchronous XHR, and ENA's APIs are CORS-enabled, so no server sits in between.
+  It started as a Django server; the server was removed once every endpoint could
+  run in the page (`STATIC_BROWSER_PLAN.md`).
 - **Vanilla JavaScript with no build step.** The app does not ship React or a
   bundler. The heavy interactive UI — the metadata spreadsheet and record grids — is
   the embedded **DataHarmonizer** bundle and the vendored **ena-browser** element, so
-  the app shell only needs to manage tabs, API calls, browser-side session storage
+  the app shell only needs to manage tabs, `py()` calls, browser-side storage
   and the DataHarmonizer/read-helper-app lifecycle. Hand-written JS keeps the app
   build-free and dependency-light: there is no `package.json` to maintain.
 - **DataHarmonizer embedded as an iframe** with a patched `window.dataHarmonizer`
-  bridge (`getExportJson()` / `loadExportJson()`) so grid exports can be saved with
-  the browser-held session and sent to the server for prepare/submit.
+  bridge (`getExportJson()` / `loadExportJson()`) so grid exports can be saved in
+  the browser-held workspace and handed to Python for prepare/submit.
 - **Schema editing delegated to the dhtb sidecar** over `postMessage`, rather than
   reimplementing a schema editor in the assistant.
-- **Reads upload pushed to a local read-helper-app** so large files go straight from
-  the user's machine to ENA — a deliberate data-path boundary.
+- **Reads upload kept on the user's machine** so large files go straight from
+  there to ENA — a deliberate data-path boundary. The local
+  read-helper-app automates it; manual mode keeps the same boundary with no extra
+  software, by generating the `webin-cli` command instead of running it.
 
 ### dataharmonizer-template-builder — Python backend, *React/TypeScript/Vite* frontend
 
-- **Python/Django** backend again, but here it calls `linkml-lib` directly for the
+- **Python/Django** backend, calling `linkml-lib` directly for the
   YAML ↔ editable-tables ↔ `schema.json` conversion and validation, with no
   intermediate wrapper modules of its own.
 - **React + TypeScript + Vite** frontend — unlike the assistant — because this app is
@@ -315,8 +327,9 @@ and edits* schemas interactively (React + TS pays for itself).
 | **DataHarmonizer** (fork `v2.1.1-mimicc`) | assistant, dhtb, dh-builder | Browser spreadsheet editor/validator for metadata entry; the UI engine both apps embed |
 | **Handsontable** 17.1.0 | inside DataHarmonizer and ena-browser; dhtb directly | The spreadsheet grid widget |
 | **LinkML / linkml-runtime** (≥1.7 / ≥1.8) | via linkml-lib | Schema metamodel, validation and runtime used for all schema work |
-| **Django** 5.x | assistant, dhtb | Backend framework: HTTP views, routing, static serving |
-| **gunicorn** | assistant | WSGI server in the container |
+| **Django** 5.x | dhtb | Backend framework: HTTP views, routing, static serving |
+| **Pyodide** 314 (CDN) | assistant | CPython in the browser: runs the submission stack in a Web Worker |
+| **nginx** | assistant | Static file server in the container |
 | **React 18 / TypeScript / Vite 6** | dhtb frontend | Component UI, typing and build for the interactive schema editor |
 | **Electron / Node** | read-helper-app | Native desktop app exposing Webin-CLI via loopback HTTP |
 | **Java** | read-helper-app (user's machine) | Runtime for `webin-cli.jar` |
@@ -325,7 +338,7 @@ and edits* schemas interactively (React + TS pays for itself).
 | **lxml** (≥5) | toolkit, linkml-lib | SRA XML building and XSD validation |
 | **Typer** | toolkit | CLI framework for `ena-submission-toolkit` |
 | **PyYAML** (≥6) | linkml-lib | LinkML YAML parsing/dumping |
-| **Browser storage** (IndexedDB, sessionStorage) | assistant frontend | Submission sessions and reads resume ledger (IndexedDB); Webin credentials for the tab only (sessionStorage) |
+| **Browser storage** (IndexedDB, Cache Storage, sessionStorage) | assistant frontend | Workspace, reads resume ledger and schema library (IndexedDB); compiled grid schemas (Cache Storage, via a service worker); Webin credentials for the tab only (sessionStorage) |
 | **Docker / docker-compose** | assistant, dhtb, dh-builder | Packaging and running the assistant and dhtb containers; building the DH bundle |
 | **webin-cli** (`webin-cli.jar` GitHub release) | read-helper-app | ENA's official read-upload tool, run with local Java on the user's machine |
 | **Node 20 / Yarn** | dh-builder | Build toolchain for the DataHarmonizer bundle |
@@ -341,24 +354,24 @@ and edits* schemas interactively (React + TS pays for itself).
   the same way. Upgrades happen by bumping a tag.
 - **ena-browser is vendored as a built artefact.** The assistant commits
   `dist/ena-browser.iife.js` + `.css` from a pinned release tag into
-  `server/static/vendor/ena-browser/` and loads them with plain `<script>`/`<link>`
+  `app/static/vendor/ena-browser/` and loads them with plain `<script>`/`<link>`
   tags. It depends on nothing else in the ecosystem — the only shared vocabulary is
   the Reports API field names (mirrored from `ena-api-client`'s models) and the ENA
   status values.
 - **DataHarmonizer is built, not imported.** A Docker build stage clones the fork
   (`...DataHarmonizer.git#v2.1.1-mimicc`) and runs `dh-builder`'s build steps
-  (Node/Yarn) to produce a bundle, which is volume-mounted into the assistant at
-  `server/static/dh/`.
+  (Node/Yarn) to produce a bundle, which the assistant's image build copies into
+  its static site at `/dh/`.
 - **dhtb is a Docker Compose service; read-helper-app is not.** `docker-compose.yml`
   runs `mimicc-server` (:9000) and `dhtb` (:8765), both bound to loopback.
   read-helper-app is installed and started separately by the user as a desktop app
   (:9100). The browser reaches read-helper-app over cross-origin HTTP and dhtb over an
-  iframe `postMessage` bridge; the assistant server only tells the browser where to
-  find them (`/api/health`: `helper_port`, `dhtb_url`).
-- **Data flows over four channels:** Python imports (assistant and dhtb ↔ libraries),
-  HTTP/JSON (browser ↔ assistant server, browser ↔ read-helper-app, assistant server
-  and read-helper-app ↔ ENA), `postMessage` (assistant page ↔ dhtb iframe), and shared
-  Docker volumes (the built DH bundle and the schema library).
+  iframe `postMessage` bridge; `config.json` tells the page where to find them
+  (`helper_port`, `dhtb_url`).
+- **Data flows over three channels:** Python imports (the assistant's in-browser
+  Python and dhtb ↔ libraries), HTTP (browser ↔ static files, browser ↔
+  read-helper-app, browser and read-helper-app ↔ ENA), and `postMessage` (assistant
+  page ↔ dhtb iframe).
 
 ```
 ena-api-client ──┐
@@ -376,26 +389,28 @@ linkml-lib ──────┤                                    │  │    
 
 ## 8. Where each part runs
 
-Three execution locations. The "server" containers are loopback-bound, so in the
-current local-only setup they also run on the user's machine — but they remain a
-separate tier from the browser and from read-helper-app.
+Two execution locations for the assistant: **the browser** and, for reads upload,
+**read-helper-app** on the user's machine. The container (or any static host) only
+serves files. dhtb and dh-builder still run as containers.
 
-| Project | Server (Docker containers) | Browser | read-helper-app (native, user's machine) |
-|---|---|---|---|
-| **mimicc-ena-submission-assistant** | Django views: prepare/submit, records list/modify/actions, reads suggest/plan/result, schema library, static + `/dh` serving | SPA; sessions in IndexedDB; credentials in sessionStorage, sent as headers per request; orchestrates reads upload between server and helper | — |
-| **ena-api-client** | All Webin Submission/Reports API calls | — | — |
-| **ena-submission-toolkit** | XML builders, XSD validation, records, DH-export prep | — | — |
-| **linkml-lib** | Schema compile/IO in the assistant and in dhtb | — | — |
-| **dhtb** | Django backend (conversion, preview builds) | React editor in a cross-origin iframe | — |
-| **dh-builder** | Image build (assistant); preview rebuilds inside dhtb | — | — |
-| **DataHarmonizer** | Served as a static bundle | Metadata grids | — |
-| **ena-browser** | Served as a static file | Record grids | — |
-| **read-helper-app** | — | Status page; driven by the SPA via `fetch`/`EventSource` | Read scanning, in-memory credentials, `webin-cli.jar` via Java, upload of read files to ENA |
+| Project | Browser | read-helper-app (native, user's machine) |
+|---|---|---|
+| **mimicc-ena-submission-assistant** | SPA; workspace and schema library in IndexedDB, grid schemas in Cache Storage (service worker); credentials in sessionStorage; all ENA calls, prepare/submit, records, reads plan and schema import/compile in a Pyodide worker; orchestrates reads upload with the helper, or renders it as a `webin-cli` script | — |
+| **ena-api-client** | All Webin Submission/Reports API calls (in the Pyodide worker) | — |
+| **ena-submission-toolkit** | XML builders, XSD validation, records, DH-export prep (in the Pyodide worker) | — |
+| **linkml-lib** | Schema compile/IO (in the Pyodide worker; also in dhtb's container) | — |
+| **dhtb** | React editor in a cross-origin iframe (Django backend in its own container) | — |
+| **dh-builder** | — (image build of the assistant; preview rebuilds inside dhtb) | — |
+| **DataHarmonizer** | Metadata grids (a static bundle) | — |
+| **ena-browser** | Record grids (a static file) | — |
+| **read-helper-app** | Status page; driven by the SPA via `fetch`/`EventSource` | Read scanning, in-memory credentials, `webin-cli.jar` via Java, upload of read files to ENA |
 
-**Data paths:** Webin credentials are held in the browser tab and copied per request
-to the server (not stored) and to read-helper-app (in memory). Metadata/XML goes
-browser → server → ENA. Read files go read-helper-app → ENA; the server only sees
-read-group paths and upload outcomes.
+**Data paths:** Webin credentials are held in the browser tab and go to ENA from
+the page's Python and to read-helper-app (in memory); in manual mode they reach
+webin-cli only through the user's own shell environment, and are never written into
+the generated script. Metadata/XML goes browser → ENA. Read files go read-helper-app
+→ ENA (or user's terminal → ENA); the page only sees read *file names* and upload
+outcomes.
 
 ---
 

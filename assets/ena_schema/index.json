@@ -1,0 +1,286 @@
+{
+  "checklists": [
+    {
+      "id": "ERC000015.xml",
+      "filename": "ERC000015.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "ERC000022.xml",
+      "filename": "ERC000022.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "ERC000025.xml",
+      "filename": "ERC000025.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000011.xml",
+      "filename": "ERC000011.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000012.xml",
+      "filename": "ERC000012.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000013.xml",
+      "filename": "ERC000013.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000014.xml",
+      "filename": "ERC000014.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000016.xml",
+      "filename": "ERC000016.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000017.xml",
+      "filename": "ERC000017.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000018.xml",
+      "filename": "ERC000018.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000019.xml",
+      "filename": "ERC000019.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000020.xml",
+      "filename": "ERC000020.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000021.xml",
+      "filename": "ERC000021.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000023.xml",
+      "filename": "ERC000023.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000024.xml",
+      "filename": "ERC000024.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000026.xml",
+      "filename": "ERC000026.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000027.xml",
+      "filename": "ERC000027.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000028.xml",
+      "filename": "ERC000028.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000029.xml",
+      "filename": "ERC000029.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000030.xml",
+      "filename": "ERC000030.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000031.xml",
+      "filename": "ERC000031.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000032.xml",
+      "filename": "ERC000032.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000033.xml",
+      "filename": "ERC000033.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000034.xml",
+      "filename": "ERC000034.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000035.xml",
+      "filename": "ERC000035.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000036.xml",
+      "filename": "ERC000036.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000037.xml",
+      "filename": "ERC000037.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000038.xml",
+      "filename": "ERC000038.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000039.xml",
+      "filename": "ERC000039.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000040.xml",
+      "filename": "ERC000040.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000041.xml",
+      "filename": "ERC000041.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000043.xml",
+      "filename": "ERC000043.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000044.xml",
+      "filename": "ERC000044.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000045.xml",
+      "filename": "ERC000045.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000046.xml",
+      "filename": "ERC000046.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000047.xml",
+      "filename": "ERC000047.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000048.xml",
+      "filename": "ERC000048.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000049.xml",
+      "filename": "ERC000049.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000050.xml",
+      "filename": "ERC000050.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000051.xml",
+      "filename": "ERC000051.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000052.xml",
+      "filename": "ERC000052.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000053.xml",
+      "filename": "ERC000053.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000055.xml",
+      "filename": "ERC000055.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000056.xml",
+      "filename": "ERC000056.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000057.xml",
+      "filename": "ERC000057.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000058.xml",
+      "filename": "ERC000058.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000059.xml",
+      "filename": "ERC000059.xml",
+      "kind": "checklist"
+    },
+    {
+      "id": "checklists/ERC000060.xml",
+      "filename": "ERC000060.xml",
+      "kind": "checklist"
+    }
+  ],
+  "xsd": [
+    {
+      "id": "ENA.project.xsd",
+      "filename": "ENA.project.xsd",
+      "kind": "xsd"
+    },
+    {
+      "id": "SRA.analysis.xsd",
+      "filename": "SRA.analysis.xsd",
+      "kind": "xsd"
+    },
+    {
+      "id": "SRA.common.xsd",
+      "filename": "SRA.common.xsd",
+      "kind": "xsd"
+    },
+    {
+      "id": "SRA.experiment.xsd",
+      "filename": "SRA.experiment.xsd",
+      "kind": "xsd"
+    },
+    {
+      "id": "SRA.run.xsd",
+      "filename": "SRA.run.xsd",
+      "kind": "xsd"
+    },
+    {
+      "id": "SRA.sample.xsd",
+      "filename": "SRA.sample.xsd",
+      "kind": "xsd"
+    },
+    {
+      "id": "SRA.study.xsd",
+      "filename": "SRA.study.xsd",
+      "kind": "xsd"
+    },
+    {
+      "id": "SRA.submission.xsd",
+      "filename": "SRA.submission.xsd",
+      "kind": "xsd"
+    }
+  ]
+}

@@ -39,47 +39,45 @@ COPY --from=dh-builder-src /src/scripts/dh_build_steps.sh /tmp/dh_build_steps.sh
 # yarn build:web), then run the actual build once on the final invocation so
 # all staged folders — mimicc, mimicc_experiment and study — end up in the
 # bundle. The study folder is the fixed template slot the Studies tab points
-# at (server/schema_service.py: ROLE_FOLDERS["study"]); without it,
-# /api/schemas/select for the study role fails and the study grid never loads.
+# at (app/schema_service.py: ROLE_FOLDERS["study"]); without it, selecting
+# a study schema fails and the study grid never loads.
 RUN DH_SKIP_BUILD=1 bash /tmp/dh_build_steps.sh /dh-src /tmp/schemas/mimicc_sample.yaml mimicc && \
     if [ -f /tmp/schemas/mimicc_experiment.yaml ]; then \
       DH_SKIP_BUILD=1 bash /tmp/dh_build_steps.sh /dh-src /tmp/schemas/mimicc_experiment.yaml mimicc_experiment; \
     fi && \
     bash /tmp/dh_build_steps.sh /dh-src /tmp/schemas/SRA_study.yaml study
 
-FROM python:3.11-slim
+# Builds the static site (scripts/build_dist.py): app scripts, the Python the
+# browser runs (app.zip — pinned EBI packages + server modules), schemas, XSDs,
+# the DataHarmonizer bundle from the stage above, and config.json. Nothing from
+# this stage runs at runtime.
+FROM python:3.11-slim AS site-builder
 
-# git is needed for pip's pinned git+https sibling dependencies. No docker
-# CLI: reads upload runs in the user's read-helper-app, not here.
+# git is needed for pip's pinned git+https sibling dependencies.
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-# ena_api (via ena_submission_toolkit), linkml_lib, dh_builder_lib and
-# ena_submission_toolkit are pinned pip dependencies (see pyproject.toml).
-# They need no local build context or
-# vendor.sh copy needed for them anymore.
 COPY pyproject.toml .
 RUN pip install --no-cache-dir .
 
-# Schemas + ENA XSDs used for sample/study build + validation. These aren't
-# Python packages — they're committed directly in this repo (schemas/,
-# assets/ena_schema/), copied straight from the local build context.
 COPY schemas/ schemas/
 COPY assets/ena_schema/ assets/ena_schema/
-# App code
-COPY server/ server/
-# Django management entrypoint (e.g. `manage.py runserver` for local dev).
-COPY manage.py manage.py
-# Built DataHarmonizer bundle (see dh-builder stage above), staged separately
-# from server/static/dh/ — that's a host bind mount (see docker-compose.yml)
-# seeded from this default on first run by scripts/server_entrypoint.sh.
-COPY --from=dh-builder /dh-src/web/dist/. dh-default/
-COPY scripts/server_entrypoint.sh /usr/local/bin/server_entrypoint.sh
-RUN chmod +x /usr/local/bin/server_entrypoint.sh
+COPY app/ app/
+COPY scripts/build_py_bundle.py scripts/build_dist.py scripts/
+COPY --from=dh-builder /dh-src/web/dist/ /dh-bundle/
+# Placeholders, not values: the runtime stage substitutes HELPER_PORT/DHTB_URL
+# when the container starts, so one image serves any deployment.
+RUN HELPER_PORT='${HELPER_PORT}' DHTB_URL='${DHTB_URL}' \
+    python scripts/build_dist.py --out /dist --dh /dh-bundle && \
+    mv /dist/config.json /dist/config.json.template
 
-ENV PYTHONPATH=/app/server:/app
+# Runtime: a static file server and nothing else.
+FROM nginx:1.29-alpine
 
-WORKDIR /app/server
-ENTRYPOINT ["/usr/local/bin/server_entrypoint.sh"]
-CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:9000", "--workers", "2"]
+COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
+COPY docker/write-config.sh /docker-entrypoint.d/40-write-config.sh
+RUN chmod +x /docker-entrypoint.d/40-write-config.sh
+COPY --from=site-builder /dist/ /usr/share/nginx/html/
+
+ENV HELPER_PORT=9100 DHTB_URL=http://localhost:8765
+EXPOSE 9000

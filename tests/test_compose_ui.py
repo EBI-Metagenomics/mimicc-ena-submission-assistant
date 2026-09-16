@@ -4,7 +4,7 @@ Unlike ``test_ui.py`` (an in-process WSGI thread with ``ena_service`` mocked),
 this drives the actual built images: the real stateless server and a real
 ``dhtb`` sidecar container reached over the network. There's no way to
 monkeypatch a function inside a process this test doesn't run, so this file
-only covers what doesn't depend on mocked ENA data (page load, sessions, tab
+only covers what doesn't depend on mocked ENA data (page load, workspace restore, tab
 switching, the DH bundle iframe, the dhtb sidecar iframe) — the
 ENA-data-dependent tests in ``test_ui.py`` stay there.
 
@@ -34,13 +34,8 @@ _PORT = os.environ.get("MIMICC_PORT", "19000")
 _DHTB_PORT = os.environ.get("MIMICC_DHTB_PORT", "18765")
 
 
-def _open_session(pg):
-    pg.wait_for_selector("#sessionModal.show")
-    name = f"compose-ui-test-{int(time.time() * 1000)}"
-    pg.fill("#newSessionName", name)
-    pg.click("#sessionModal button:has-text('Create & open')")
-    pg.wait_for_selector("#sessionModal:not(.show)", state="attached")
-    pg.wait_for_function("() => !document.body.classList.contains('no-session')")
+def _wait_for_workspace(pg):
+    pg.wait_for_function("() => window.WORKSPACE_READY === true")
 
 
 @pytest.fixture(scope="session")
@@ -57,7 +52,7 @@ def compose_url():
         deadline = time.time() + 300  # image build included
         while time.time() < deadline:
             try:
-                if httpx.get(f"{url}/api/health", timeout=1).status_code == 200:
+                if httpx.get(f"{url}/config.json", timeout=1).status_code == 200:
                     break
             except Exception:
                 time.sleep(1)
@@ -74,7 +69,7 @@ def page(compose_url):
         browser = p.chromium.launch()
         pg = browser.new_page()
         pg.goto(compose_url)
-        _open_session(pg)
+        _wait_for_workspace(pg)
         yield pg
         browser.close()
 
@@ -119,9 +114,8 @@ def test_maximize_controls_for_reads_and_dataharmonizer(page):
 
 
 def test_dh_bundle_iframe_loads(page):
-    # Real DataHarmonizer bundle (server/static/dh/, seeded at container
-    # start), not a stub — confirms the dh-builder image stage actually
-    # produced a usable bundle.
+    # Real DataHarmonizer bundle (built into the image's site at /dh/), not a
+    # stub — confirms the dh-builder image stage actually produced a usable bundle.
     page.click("a.vf-tabs__link:has-text('Samples')")
     page.wait_for_function("() => document.getElementById('dhFrame').src.includes('/dh/')")
     frame = page.frame_locator("#dhFrame")
@@ -242,12 +236,12 @@ def _wait_for_dh_iframe_ready(page, frame_id):
     page.frame_locator(frame_id).locator(".ht_master .htCore tbody td").first.wait_for(timeout=15_000)
 
 
-def _wait_for_banner_text(page, selector, text, errors):
+def _wait_for_banner_text(page, selector, text, errors, timeout_ms=35_000):
     try:
         page.wait_for_function(
             "([selector, text]) => document.querySelector(selector)?.innerText.includes(text)",
             arg=[selector, text],
-            timeout=35_000,
+            timeout=timeout_ms,
         )
     except Exception as exc:
         banner_text = page.inner_text(selector)
@@ -289,6 +283,20 @@ def test_schema_selection_reloads_real_dh_iframes_without_toolbar_error(page):
 
     assert not [message for message in errors if "getColumnCoordinates" in message]
 
+    # The selections live in this browser (Cache Storage, served by sw.js), so a
+    # reload shows them again with no select step and no recompile.
+    page.reload()
+    page.wait_for_function("() => window.WORKSPACE_READY === true")
+    assert page.evaluate("async () => await window.GRID_SCHEMAS_RESTORED") == []
+    served = page.evaluate(
+        """async () => Object.fromEntries(await Promise.all(['mimicc', 'mimicc_experiment', 'study'].map(
+            async (folder) => [folder, (await fetch(`/templates/${folder}/schema.json`)).headers.get('x-schema-id')]
+        )))"""
+    )
+    assert served == {"mimicc": "mimicc_experiment", "mimicc_experiment": "mimicc_sample", "study": "sra_study"}
+    page.click("a.vf-tabs__link:has-text('Samples')")
+    _wait_for_dh_iframe_ready(page, "#dhFrame")
+
 
 def test_study_grid_auto_loads_on_startup(page):
     # initDhFrames() points the study frame at study/<registry.study> on load,
@@ -313,3 +321,15 @@ def test_dhtb_sidecar_iframe_loads(page):
             return
         page.wait_for_timeout(200)
     raise AssertionError("dhtb sidecar iframe never loaded")
+
+
+def test_study_prepare_runs_in_the_browser_against_the_built_schema(page):
+    # The image builds app.zip (Dockerfile) and the DH bundle serves the study
+    # template's schema.yaml, which only exists in the real bundle — so this is
+    # the one place Prepare can run end to end, in the browser's Python.
+    page.click("a.vf-tabs__link:has-text('Studies')")
+    _wait_for_dh_iframe_ready(page, "#studyDhFrame")
+    page.click("#vf-tabs__section--studies button:has-text('Prepare')")
+    # First use loads Pyodide and its packages from the CDN/PyPI.
+    _wait_for_banner_text(page, "#studyPrepBanner", "Prepared", [], timeout_ms=180_000)
+    assert "Prepared 0 study record(s)" in page.inner_text("#studyPrepBanner")

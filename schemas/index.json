@@ -1,0 +1,44 @@
+[
+  {
+    "id": "erc000015",
+    "name": "ERC000015",
+    "title": "ERC000015",
+    "description": "Genomic Standards Consortium package extension for reporting of measurements and observations obtained from the environment where the sample was obtained. By choosing the environmental package, a selection of fields can be made from a relevant subsets of the GSC terms.",
+    "file": "ERC000015.yaml"
+  },
+  {
+    "id": "erc000022",
+    "name": "ERC000022",
+    "title": "ERC000022",
+    "description": "Genomic Standards Consortium package extension for reporting of measurements and observations obtained from the environment where the sample was obtained. By choosing the environmental package, a selection of fields can be made from a relevant subsets of the GSC terms.",
+    "file": "ERC000022.yaml"
+  },
+  {
+    "id": "erc000025",
+    "name": "ERC000025",
+    "title": "ERC000025",
+    "description": "Genomic Standards Consortium package extension for reporting of measurements and observations obtained from the environment where the sample was obtained. By choosing the environmental package, a selection of fields can be made from a relevant subsets of the GSC terms.",
+    "file": "ERC000025.yaml"
+  },
+  {
+    "id": "sra_study",
+    "name": "SRA_study",
+    "title": "Study",
+    "description": "A Study is a container for a sequencing investigation that may comprise multiple experiments. The Study has an overall goal, but is otherwise minimally defined in the SRA. A Study is composed of a descriptor, zero or more experiments, and zero or more analyses. The submitter may decorate the Study with web links and properties.",
+    "file": "SRA_study.yaml"
+  },
+  {
+    "id": "mimicc_experiment",
+    "name": "MIMICC_Experiment",
+    "title": "MIMICC Experiment Submission",
+    "description": "Schema for MIMICC sequencing-experiment metadata submission to ENA. Filtered from mimicc_sample_experiment.yaml down to the SRA-experiment-scoped slots (via scripts/dh_schema.py filter), with PLATFORM/INSTRUMENT added (absent from the source schema) and slot titles/names aligned to the mimicc-ena-submission-assistant app's webin-cli manifest contract (see that app's README \"Experiment metadata schema\"). Does not include sample metadata (covered by mimicc_sample_experiment.yaml) or the read-file/sample-pairing decision (covered by that app's own pairing table) \u2014 only the per-run sequencing/library metadata.",
+    "file": "mimicc_experiment.yaml"
+  },
+  {
+    "id": "mimicc_sample",
+    "name": "MIMICC_Sample",
+    "title": "MIMICC Sample Submission",
+    "description": "Schema for MIMICC sample metadata submission to ENA. Filtered from mimicc_sample_experiment.yaml down to the ERC000025/ENA.sample/ENA.project/MIMICC.custom -scoped slots (via scripts/dh_schema.py filter-data's SQL-WHERE-on-slot-metadata mechanism, applied to schema slots rather than export data: source IN ('ERC000025', 'MIMICC.custom', 'ENA.sample', 'ENA.project')). Covers ERC000025 sample metadata and MIMICC-specific culture and perturbation attributes. Does not include experiment/library metadata (see mimicc_experiment.yaml) or study metadata.",
+    "file": "mimicc_sample.yaml"
+  }
+]

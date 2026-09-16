@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MIMICC ENA Submission Assistant</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap">
+<link rel="stylesheet" href="https://assets.emblstatic.net/vf/v2.5.28/css/styles.css">
+<link rel="stylesheet" href="https://ebi.emblstatic.net/web_guidelines/EBI-Icon-fonts/v1.3/fonts.css">
+<link rel="stylesheet" href="/static/vendor/ena-browser/ena-browser.css">
+<style>
+  :root {
+    --bg:#ffffff; --panel:#f5f5f5; --line:#d0d7de; --fg:#212121; --muted:#636c76;
+    --accent:#008272; --ok:#117733; --bad:#CC3333; --warn:#FF6600;
+    --btn2-bg:#e1e4e8; --btn2-fg:#212121; --code-bg:#eef1f4;
+  }
+  :root[data-theme="dark"] {
+    --bg:#12171d; --panel:#1c232b; --line:#39414b; --fg:#e6edf3; --muted:#9aa5b1;
+    --accent:#2fb3a1; --ok:#5cb85c; --bad:#e57373; --warn:#ffa040;
+    --btn2-bg:#2a323b; --btn2-fg:#e6edf3; --code-bg:#232b34;
+  }
+  /* Visual Framework components hard-code light colours, so the variables
+     above are not enough — repaint the VF surfaces this app actually uses. */
+  /* Not .vf-hero itself — its green band is branding and reads fine in both. */
+  [data-theme="dark"] .vf-card,
+  [data-theme="dark"] .vf-tabs-content, [data-theme="dark"] .vf-tabs__section,
+  [data-theme="dark"] .vf-box { background:var(--bg); color:var(--fg); }
+  [data-theme="dark"] .vf-card--bordered { border-color:var(--line); }
+  [data-theme="dark"] .vf-form__input, [data-theme="dark"] .vf-form__select,
+  [data-theme="dark"] .vf-form__textarea { background:var(--panel); color:var(--fg); border-color:var(--line); }
+  [data-theme="dark"] .vf-form__label, [data-theme="dark"] .vf-hero__heading,
+  [data-theme="dark"] h1, [data-theme="dark"] h2 { color:var(--fg); }
+  [data-theme="dark"] .vf-tabs__list { border-bottom-color:var(--line); }
+  [data-theme="dark"] .vf-tabs__link { background:var(--panel); color:var(--fg); border-color:var(--line); }
+  [data-theme="dark"] .vf-tabs__link[aria-selected="true"] { background:var(--bg); color:var(--accent); }
+  [data-theme="dark"] .vf-button--secondary { background:var(--btn2-bg); color:var(--btn2-fg); border-color:var(--line); }
+  [data-theme="dark"] .vf-banner { background:var(--panel); color:var(--fg); }
+  * { box-sizing:border-box; }
+  /* Prevent a touchpad's horizontal side-scroll from being interpreted as a
+     swipe-back/forward navigation gesture when it overscrolls past an edge
+     (e.g. while side-scrolling a wide table). */
+  html, body { overscroll-behavior-x: none; }
+  body { margin:0; font:14px/1.5 "Open Sans",Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+  .env { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .creds-status { font-size:12px; color:var(--muted); }
+  .creds-status.on { color:#117733; }
+  main { padding:18px; max-width:1100px; margin:0 auto; }
+  .panel { padding:16px; margin-bottom:16px; }
+  .panel-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+  .panel-head h2 { margin:0; }
+  /* Visual Framework components establish their own elevated layers. Keep a
+     maximized panel above all page chrome, including the hero and tab bar. */
+  .panel.maximized { position:fixed; inset:10px; z-index:10000; margin:0; display:flex; flex-direction:column; overflow:hidden;
+                     box-shadow:0 20px 80px rgba(0,0,0,.45); }
+  body.has-maximized-panel { overflow:hidden; }
+  .panel.maximized .panel-body { min-height:0; flex:1; display:flex; flex-direction:column; overflow:hidden; }
+  h2 { font-size:15px; margin:0 0 12px; }
+  h3 { font-size:13px; color:var(--muted); margin:16px 0 6px; text-transform:uppercase; letter-spacing:.04em; }
+  input, select, textarea, button { font:inherit; }
+  textarea { min-height:120px; font-family:ui-monospace,Menlo,monospace; font-size:12px; resize:vertical; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; }
+  .row > * { flex:1; min-width:140px; }
+  .vf-button--danger-override { background:var(--bad) !important; }
+  .vf-button:disabled, .vf-button[disabled] { opacity:.5; cursor:not-allowed; pointer-events:none; }
+  .actions { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; align-items:center; }
+  /* Scoped to this app's own tables: <ena-browser> renders Handsontable into
+     light DOM, so bare table/th/td rules would repaint its grid. */
+  .scroll table, #runTable { width:100%; border-collapse:collapse; font-size:12px; margin-top:10px; }
+  .scroll th, .scroll td, #runTable th, #runTable td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  .scroll th, #runTable th { color:var(--muted); font-weight:600; }
+  .scroll td.wrap, .scroll th.wrap { white-space:normal; }
+  .scroll { overflow:auto; max-height:380px; border:1px solid var(--line); border-radius:6px; }
+  .log-heading { margin-top:14px; }
+  .log { background:#000; color:#c9d1d9; font-family:ui-monospace,Menlo,monospace; font-size:12px; padding:10px; border-radius:6px; min-height:96px; height:280px; overflow:auto; white-space:pre-wrap; }
+  .muted { color:var(--muted); }
+  /* MODIFY manifests + submission log entries (Records tab) */
+  details.entry { border:1px solid var(--line); border-left-width:3px; border-radius:5px; margin-bottom:6px; background:var(--bg); }
+  details.entry > summary { cursor:pointer; padding:6px 10px; font-size:13px; }
+  details.entry.ok { border-left-color:var(--ok); }
+  details.entry.bad { border-left-color:var(--bad); }
+  details.entry .body { padding:0 10px 10px; font-size:13px; }
+  details.entry pre { background:var(--panel); border:1px solid var(--line); border-radius:4px; padding:8px;
+                      overflow:auto; max-height:340px; font-size:12px; margin:8px 0 0; white-space:pre-wrap; word-break:break-word; }
+  .msg { margin:2px 0; font-family:ui-monospace,Menlo,monospace; font-size:12px; }
+  .msg.warn { color:var(--warn); }
+  .msg.bad { color:var(--bad); }
+  .fields { margin:4px 0 0; padding-left:18px; }
+  .state.warn { color:var(--warn); }
+  .state.bad { color:var(--bad); }
+  .state.ok { color:var(--ok); }
+  dialog { background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:8px; max-width:min(720px,90vw); }
+  dialog::backdrop { background:rgba(0,0,0,.5); }
+  .dh-embed-wrap { width:100%; height:850px; min-height:200px; max-height:90vh; resize:vertical; overflow:auto;
+            border:1px solid var(--line); border-radius:6px; }
+  .panel:not(.maximized) #schemaEditorWrap { height:700px; }
+  /* schemaEditorWrap has extra always-visible siblings (the save/export row,
+     banner) below it in .panel-body, unlike the other dh-embed-wrap panels —
+     height:100% would be used as a flex-basis and get shrunk to share space
+     with those siblings, so grow into the leftover space instead. */
+  .panel.maximized #schemaEditorWrap { height:auto; flex:1 1 auto; min-height:0; }
+  .dh-embed-frame { width:100%; height:100%; border:none; display:block; background:#fff; }
+  .inline { display:flex; align-items:center; gap:6px; }
+  .inline input[type=checkbox] { width:auto; }
+  code { background:var(--code-bg); padding:1px 5px; border-radius:4px; }
+  .subpanel { border:1px solid var(--line); border-radius:6px; padding:12px; margin-top:10px; background:var(--bg); }
+  .dirlist a { color:var(--fg); text-decoration:none; display:block; padding:4px 6px; border-radius:4px; }
+  .dirlist a:hover { background:var(--panel); }
+  .assign-grid { --assign-table-height:380px; --assign-left-width:42%; display:grid; grid-template-columns:minmax(280px, var(--assign-left-width)) 14px minmax(0, 1fr); gap:0; height:var(--assign-table-height); margin-top:12px; align-items:stretch; }
+  .assign-samples-pane { display:flex; flex-direction:column; min-width:0; min-height:0; padding-right:12px; }
+  .assign-samples-pane > ena-browser { flex:1 1 auto; min-height:0; height:auto !important; margin-top:8px; }
+  .assign-grid > .scroll { height:100%; max-height:none; margin-left:12px; }
+  .assign-divider { position:relative; z-index:1; width:14px; border:0; border-radius:7px; background:transparent; cursor:col-resize; touch-action:none; }
+  .assign-divider::before { content:""; position:absolute; inset:8px 5px; border-radius:4px; background:var(--line); }
+  .assign-divider::after { content:"⋮"; position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); color:var(--muted); font-size:18px; line-height:1; }
+  .assign-divider:hover::before, .assign-divider:focus-visible::before, .assign-divider.is-dragging::before { background:var(--accent); }
+  .assign-divider:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  #runTable tbody tr.assignable { cursor:pointer; }
+  #runTable tbody tr.assignable:hover { background:var(--panel); }
+  .icon-btn { background:var(--btn2-bg); color:var(--btn2-fg); border:1px solid var(--line); border-radius:6px; padding:3px 7px; cursor:pointer; width:auto; }
+  .icon-btn.danger { color:var(--bad); }
+  .workspace-chip { display:inline-flex; align-items:center; gap:8px; font-size:12px; padding:2px 4px 2px 10px;
+                    border:1px solid var(--line); border-radius:12px; }
+  .modal-overlay { display:none; position:fixed; inset:0; z-index:10100; background:rgba(0,0,0,.55);
+                   align-items:flex-start; justify-content:center; padding:48px 16px; overflow:auto; }
+  .modal-overlay.show { display:flex; }
+  .modal-box { width:100%; max-width:640px; margin:0; }
+  .session-row { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 10px;
+                 border-bottom:1px solid var(--line); }
+  .session-row:last-child { border-bottom:0; }
+  .session-row .meta { color:var(--muted); font-size:11px; }
+  .panel.maximized .dh-embed-wrap { height:100%; max-height:none; resize:none; }
+  /* Let flex allocate the remaining space after the panel controls and any
+     visible status banner. A literal height:100% here overflows the body by
+     the controls' height and can put the last table rows under the banner. */
+  .panel.maximized .assign-grid { --assign-table-height:auto; height:auto; flex:1 1 0; min-height:0; }
+  .panel.maximized .assign-grid > div, .panel.maximized .assign-grid > .scroll { min-height:0; }
+  .panel.maximized .assign-grid > .scroll { height:100%; max-height:none; }
+  @media (max-width: 820px) { .assign-grid { display:block; height:auto; } .assign-samples-pane { height:380px; padding-right:0; } .assign-divider { display:none; } .assign-grid > .scroll { height:380px; margin:12px 0 0; } }
+  /* Logos: VF nav/logo components expect text; make images visible */
+  .vf-logo__image { display:block; height:28px; width:auto; }
+  .vf-navigation__link img { display:inline-block; height:20px; width:auto; vertical-align:middle; }
+  /* Font size: make VF form elements match body text size */
+  .vf-form__input, .vf-form__select, .vf-form__textarea { font-size:inherit; font-family:inherit; }
+  /* Reads has two routes to ENA — the local helper app, or a webin-cli command
+     the user runs themselves. One class decides which controls exist. It goes on
+     <body> because the VF tabs JS copies each section's id
+     onto its tab anchor, so #vf-tabs__section--reads is not a unique element.
+     !important because several of these are also shown/hidden by inline style
+     (detectHelper, the generated script), which outranks a plain class rule. */
+  body.reads-mode-manual .helper-only,
+  body:not(.reads-mode-manual) .manual-only { display:none !important; }
+  /* Hero: content-wide only, with generous vertical padding */
+  .vf-hero { display:block; width:fit-content; padding-top:2rem; padding-bottom:2rem; margin-bottom:1.5rem; }
+  .vf-hero__content { max-width:none; margin:0; padding:0; }
+</style>
+</head>
+<body>
+<header class="vf-global-header">
+  <a href="https://www.ebi.ac.uk" class="vf-logo" target="_blank" rel="noopener" title="EMBL-EBI">
+    <img src="/static/logos/ebi-logo-white.svg" alt="EMBL-EBI" class="vf-logo__image" style="height:28px">
+  </a>
+  <nav class="vf-navigation vf-navigation--global | vf-cluster">
+    <ul class="vf-navigation__list | vf-list | vf-cluster__inner">
+      <li class="vf-navigation__item">
+        <a class="vf-navigation__link" href="https://www.ebi.ac.uk/ena" target="_blank" rel="noopener" title="European Nucleotide Archive">
+          <img src="/static/logos/ena-logo-white.png" alt="ENA" style="height:20px; vertical-align:middle">
+        </a>
+      </li>
+      <li class="vf-navigation__item">
+        <a class="vf-navigation__link" href="https://www.ebi.ac.uk/metagenomics" target="_blank" rel="noopener" title="MGnify">
+          <img src="/static/logos/mgnify-logo-white.svg" alt="MGnify" style="height:22px; vertical-align:middle">
+        </a>
+      </li>
+    </ul>
+  </nav>
+</header>
+<main>
+<section class="vf-hero vf-hero--400">
+  <div class="vf-hero__content | vf-box vf-stack vf-stack--400">
+    <h1 class="vf-hero__heading">ENA Submission Assistant</h1>
+    <div class="env">
+      <span class="workspace-chip" id="workspaceChip"
+            title="Your work is saved in this browser only. Download a copy to back it up or move it to another machine.">
+        <span class="muted" id="workspaceSaved">not saved yet</span>
+        <button class="icon-btn" type="button" onclick="downloadWorkspace()">Download</button>
+        <label class="icon-btn" style="margin:0">Import…<input type="file" id="workspaceImportFile" accept="application/json,.json" onchange="importWorkspace()" style="display:none"></label>
+        <button class="icon-btn danger" type="button" onclick="clearWorkspace()" title="Start over with an empty workspace">Clear</button>
+        <span class="muted" id="storageWarning" hidden
+              title="The browser did not grant persistent storage, so it may clear your workspace and schema library under storage pressure.">⚠ may be evicted — Download to back up</span>
+      </span>
+      <span class="creds-status" id="credStatus">credentials: not set</span>
+      <span class="vf-badge vf-badge--primary" id="envPill">TEST</span>
+      <label class="inline" style="margin:0"><input type="checkbox" id="prodToggle"> production</label>
+      <button class="icon-btn" type="button" id="themeToggle" onclick="toggleTheme()"
+              title="Switch between light and dark" aria-pressed="false">Dark</button>
+    </div>
+  </div>
+</section>
+<div class="vf-tabs">
+  <ul class="vf-tabs__list" data-vf-js-tabs>
+    <li class="vf-tabs__item"><a class="vf-tabs__link" href="#vf-tabs__section--creds">Credentials</a></li>
+    <li class="vf-tabs__item"><a class="vf-tabs__link" href="#vf-tabs__section--studies">Studies</a></li>
+    <li class="vf-tabs__item"><a class="vf-tabs__link" href="#vf-tabs__section--samples">Samples</a></li>
+    <li class="vf-tabs__item"><a class="vf-tabs__link" href="#vf-tabs__section--reads">Reads</a></li>
+    <li class="vf-tabs__item"><a class="vf-tabs__link" href="#vf-tabs__section--schema">Schema</a></li>
+    <li class="vf-tabs__item"><a class="vf-tabs__link" href="#vf-tabs__section--records">Records</a></li>
+  </ul>
+</div>
+<div class="vf-tabs-content" data-vf-js-tabs-content>
+
+  <!-- CREDENTIALS -->
+  <section class="vf-tabs__section" id="vf-tabs__section--creds">
+    <div class="vf-card vf-card--bordered panel">
+      <h2>Webin credentials</h2>
+      <p class="muted">Held in this browser tab only — never written to disk, never sent to a server store. Re-enter after closing the tab.</p>
+      <div class="row">
+        <div><label class="vf-form__label">Webin username</label><input class="vf-form__input" id="username" placeholder="Webin-XXXXX" autocomplete="username"></div>
+        <div><label class="vf-form__label">Password</label><input class="vf-form__input" id="password" type="password" autocomplete="current-password"></div>
+      </div>
+      <div class="actions">
+        <button class="vf-button vf-button--primary" onclick="saveCreds()">Save</button>
+        <button class="vf-button vf-button--secondary" onclick="clearCreds()">Clear</button>
+      </div>
+      <div class="vf-banner vf-banner--alert" style="display:none" id="credBanner"></div>
+    </div>
+    <div class="vf-card vf-card--bordered panel">
+      <h2>Workflow</h2>
+      <p class="muted">1. Create a <b>study</b> → 2. Enter sample metadata in <b>Samples</b> (DataHarmonizer) → prepare & submit →
+      3. In <b>Reads</b>, assign FASTQ files to samples and submit via webin-cli →
+      4. Manage everything in <b>Records</b>. The <span class="vf-badge vf-badge--primary">TEST</span>/<span class="vf-badge vf-badge--secondary">PROD</span> toggle
+      (top right) selects the ENA service for every action.</p>
+    </div>
+  </section>
+
+  <!-- STUDIES -->
+  <section class="vf-tabs__section" id="vf-tabs__section--studies">
+    <div class="vf-card vf-card--bordered panel maximizable" id="studyDhPanel">
+      <div class="panel-head">
+        <h2>1 · Enter study metadata (DataHarmonizer)</h2>
+        <div class="inline">
+          <button class="vf-button vf-button--secondary" type="button" onclick="exportStudyDhNow()">Export</button>
+          <span class="muted" id="studyDhSavedIndicator">Last saved: never</span>
+          <button class="icon-btn maximize-toggle-btn" type="button" onclick="togglePanelMax('studyDhPanel')" title="Maximize panel" aria-label="Maximize panel">⛶</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="row" style="margin-bottom:10px">
+          <div><label class="vf-form__label">Schema</label><select class="vf-form__select" id="studySchemaSelect"></select></div>
+          <div style="align-self:flex-end"><button class="vf-button vf-button--secondary" onclick="applySchemaSelection('study')">Use this schema</button></div>
+        </div>
+        <div class="dh-embed-wrap" id="studyDhWrap"><iframe class="dh-embed-frame" id="studyDhFrame"></iframe></div>
+        <p class="muted" id="studyDhMissing">No study schema selected yet. Choose a schema above (e.g. <code>SRA_study</code>) and click <b>Use this schema</b>.</p>
+      </div>
+    </div>
+    <div class="vf-card vf-card--bordered panel">
+      <h2>2 · Prepare study export</h2>
+      <div class="actions"><button class="vf-button vf-button--primary" onclick="prepareStudies()">Prepare</button></div>
+      <div class="vf-banner vf-banner--alert" style="display:none" id="studyPrepBanner"></div>
+      <div class="scroll" id="studyPrepOut"></div>
+    </div>
+    <div class="vf-card vf-card--bordered panel">
+      <h2>3 · Submit studies</h2>
+      <div class="row">
+        <div><label class="vf-form__label">Hold until (optional, YYYY-MM-DD)</label><input class="vf-form__input" id="studyHold" placeholder="2026-12-01"></div>
+        <div class="inline" style="align-self:flex-end"><input type="checkbox" id="studyModify"><label style="margin:0">modify existing (match by alias/title)</label></div>
+        <div class="inline" style="align-self:flex-end"><input type="checkbox" id="studyPublic"><label style="margin:0">release public after</label></div>
+      </div>
+      <div class="actions">
+        <button class="vf-button vf-button--primary" onclick="submitStudies()">Submit prepared studies</button>
+        <button class="vf-button vf-button--secondary" onclick="refreshStudyGrid()">Refresh from ENA</button>
+      </div>
+      <div class="vf-banner vf-banner--alert" style="display:none" id="studyBanner"></div>
+      <h3 class="log-heading">Submission log</h3>
+      <pre class="log" id="studyLog">No study submission run yet.</pre>
+      <div class="scroll" id="studyOut"></div>
+      <!-- The receipt above is what this submission did, failures included;
+           the grid below is what ENA now holds. Read-only: records change on
+           the Records tab, in one place. -->
+      <h3 class="log-heading">In ENA</h3>
+      <ena-browser id="studyGrid" entity="studies" mode="read" height="360" style="display:none"></ena-browser>
+      <p class="muted" id="studyGridEmpty">No studies have been submitted from this workspace. This confirmation table only shows submissions made here; use the Records tab to browse records already in your ENA account.</p>
+    </div>
+  </section>
+
+  <!-- SAMPLES -->
+  <section class="vf-tabs__section" id="vf-tabs__section--samples">
+    <div class="vf-card vf-card--bordered panel maximizable" id="dhPanel">
+      <div class="panel-head">
+        <h2>1 · Enter sample metadata (DataHarmonizer)</h2>
+        <div class="inline">
+          <button class="vf-button vf-button--secondary" type="button" id="dhExportBtn" onclick="exportDhNow()">Export</button>
+          <span class="muted" id="dhSavedIndicator">Last saved: never</span>
+          <button class="icon-btn maximize-toggle-btn" type="button" onclick="togglePanelMax('dhPanel')" title="Maximize panel" aria-label="Maximize panel">⛶</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="row" style="margin-bottom:10px">
+          <div><label class="vf-form__label">Schema</label><select class="vf-form__select" id="sampleSchemaSelect"></select></div>
+          <div style="align-self:flex-end"><button class="vf-button vf-button--secondary" onclick="applySchemaSelection('sample')">Use this schema</button></div>
+        </div>
+        <div class="dh-embed-wrap" id="dhWrap"><iframe class="dh-embed-frame" id="dhFrame"></iframe></div>
+        <p class="muted" id="dhMissing" style="display:none">DataHarmonizer bundle not built. Run
+          <code>bash scripts/build_dh_template.sh</code>, or just export from a standalone DataHarmonizer and upload the JSON below.</p>
+      </div>
+    </div>
+    <div class="vf-card vf-card--bordered panel">
+      <h2>2 · Prepare sample export</h2>
+      <p class="muted">Prepare pulls the current grid data from DataHarmonizer automatically. It is then filtered to
+        sample/study fields and renames columns to ENA field names. If DataHarmonizer isn't available, upload or
+        paste an exported <b>JSON</b> file below instead.</p>
+      <div class="row">
+        <div><label class="vf-form__label">Upload DH export (.json)</label><input type="file" id="dhFile" accept=".json" onchange="loadDhFile()"></div>
+        <div><label class="vf-form__label">Column filter (SQL WHERE on slot metadata)</label><input class="vf-form__input" id="sampleFilter" autocomplete="off"></div>
+      </div>
+      <label class="vf-form__label">Or paste DH export JSON</label>
+      <textarea class="vf-form__textarea" id="dhExport" placeholder='{ "Container": { "MIMICC_SampleExperiments": [ ... ] } }'></textarea>
+      <div class="actions"><button class="vf-button vf-button--primary" onclick="prepareSamples()">Prepare</button></div>
+      <div class="vf-banner vf-banner--alert" style="display:none" id="prepBanner"></div>
+      <div class="scroll" id="prepOut"></div>
+    </div>
+    <div class="vf-card vf-card--bordered panel">
+      <h2>3 · Submit samples</h2>
+      <div class="row">
+        <div><label class="vf-form__label">Checklist</label><input class="vf-form__input" id="sampleChecklist" value="ERC000025"></div>
+        <div><label class="vf-form__label">Hold until (optional)</label><input class="vf-form__input" id="sampleHold" placeholder="2026-12-01"></div>
+        <div class="inline" style="align-self:flex-end"><input type="checkbox" id="sampleModify"><label style="margin:0">modify existing</label></div>
+        <div class="inline" style="align-self:flex-end"><input type="checkbox" id="samplePublic"><label style="margin:0">release public</label></div>
+      </div>
+      <div class="actions">
+        <button class="vf-button vf-button--primary" id="sampleSubmitBtn" onclick="submitSamples()" disabled>Submit prepared samples</button>
+        <button class="vf-button vf-button--secondary" onclick="refreshSampleGrid()">Refresh from ENA</button>
+      </div>
+      <div class="vf-banner vf-banner--alert" style="display:none" id="sampleBanner"></div>
+      <div class="scroll" id="sampleOut"></div>
+      <!-- Receipt above, what ENA now holds below. Read-only: records change
+           on the Records tab. -->
+      <h3 class="log-heading">In ENA</h3>
+      <ena-browser id="sampleGrid" entity="samples" mode="read" height="360" style="display:none"></ena-browser>
+      <p class="muted" id="sampleGridEmpty">No samples have been submitted from this workspace. This confirmation table only shows submissions made here; use the Records tab to browse records already in your ENA account.</p>
+    </div>
+  </section>
+
+  <!-- READS -->
+  <section class="vf-tabs__section" id="vf-tabs__section--reads">
+    <div class="vf-card vf-card--bordered panel">
+      <h2>1 · Find your read files (local)</h2>
+      <p class="muted">Your FASTQ/BAM/CRAM files stay on your machine — they go <b>directly to ENA</b> and never pass
+        through this server. Paired-end mates (<code>_R1/_R2</code> or <code>_1/_2</code>) are grouped
+        automatically.</p>
+      <label class="vf-form__label" for="readsMode">How do you want to run the upload?</label>
+      <select class="vf-form__select" id="readsMode" onchange="onReadsModeChange()">
+        <option value="helper">Local helper app — read-helper-app runs webin-cli for me</option>
+        <option value="manual">Manual — give me a command to run myself</option>
+      </select>
+      <p class="muted helper-only" style="margin-top:8px">
+        <span id="helperStatus" class="vf-badge">checking helper…</span></p>
+      <div id="helperMissing" class="helper-only vf-banner vf-banner--alert vf-banner--warning" style="display:none">
+        The local <b>reads upload helper</b> isn't running, so reads can't be scanned or uploaded. Start it (see the
+        <code>read-helper-app</code> app), then <a href="#" onclick="detectHelper();return false">re-check</a>, or
+        switch to <b>Manual</b> above.
+      </div>
+      <p class="muted manual-only" style="margin-top:8px">Choosing your reads folder below reads the
+        <b>file names only</b> — no file contents are opened and nothing is uploaded. You'll get a script to paste
+        into a terminal, which needs Java and
+        <a href="https://github.com/enasequence/webin-cli/releases" target="_blank" rel="noopener">webin-cli</a>
+        installed on your machine.</p>
+      <label class="vf-form__label">Local reads directory (absolute path on your machine)</label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input class="vf-form__input" id="readsLocalDir" placeholder="/Users/me/mimicc/reads" style="flex:1">
+        <button class="vf-button vf-button--secondary helper-only" type="button" onclick="browseDir()">Browse…</button>
+      </div>
+      <p class="muted manual-only">Used as <code>-inputDir</code> in the generated command. The browser isn't allowed
+        to see the real path of the folder you pick, so type or paste it here.</p>
+      <div class="actions">
+        <button class="vf-button vf-button--primary helper-only" id="scanReadsBtn" onclick="scanReads()">Scan</button>
+        <label class="vf-button vf-button--secondary manual-only" id="readsDirPickLabel"
+               style="display:inline-block; text-align:center; cursor:pointer">
+          Choose reads folder…<input type="file" id="readsDirInput" webkitdirectory directory multiple
+                                     onchange="scanReadsFromPicker()" style="display:none">
+        </label>
+        <button class="vf-button vf-button--secondary" onclick="suggestSamples()">Auto-assign samples</button>
+      </div>
+    </div>
+    <div class="vf-card vf-card--bordered panel maximizable" id="readsAssignPanel">
+      <div class="panel-head">
+        <h2>2 · Pair samples to reads</h2>
+        <button class="icon-btn maximize-toggle-btn" type="button" onclick="togglePanelMax('readsAssignPanel')" title="Maximize panel" aria-label="Maximize panel">⛶</button>
+      </div>
+      <div class="panel-body">
+        <div class="row">
+          <div><label class="vf-form__label">Default STUDY accession</label><input class="vf-form__input" id="defaultStudy" placeholder="PRJEB..."></div>
+        </div>
+        <div class="actions" style="margin-top:8px">
+          <button class="vf-button vf-button--secondary" onclick="exportPairingsTsv()">Export pairings (TSV)</button>
+          <label class="vf-button vf-button--secondary" style="display:inline-block; text-align:center; cursor:pointer">
+            Import pairings (TSV)<input type="file" id="pairingsTsvFile" accept=".tsv,.txt" onchange="importPairingsTsv()" style="display:none">
+          </label>
+        </div>
+        <div class="assign-grid" id="readsAssignGrid">
+          <div class="assign-samples-pane">
+            <!-- Criteria on the fetch, to narrow to the right cohort before
+                 pairing; the grid's own column filters and sort do the rest. -->
+            <div class="row" style="margin-top:0">
+              <div><input class="vf-form__input" id="pairSearch" placeholder="search every column"></div>
+              <div><input class="vf-form__input" id="pairLinked" placeholder="linked to accession, e.g. PRJEB1234"></div>
+            </div>
+            <div class="actions" style="margin-top:8px">
+              <button class="vf-button vf-button--secondary" onclick="loadReadSamples()">Load samples</button>
+            </div>
+            <ena-browser id="pairSamples" entity="samples" mode="read" selection-mode="single" height="380"></ena-browser>
+          </div>
+          <button class="assign-divider" id="readsAssignDivider" type="button" role="separator" aria-orientation="vertical" aria-label="Resize samples and reads panels" aria-valuemin="25" aria-valuemax="75" aria-valuenow="42" title="Drag to resize panels"></button>
+          <div class="scroll"><table id="runTable"><thead></thead><tbody></tbody></table></div>
+        </div>
+      </div>
+      <div class="vf-banner vf-banner--alert" style="display:none" id="readsBanner"></div>
+    </div>
+    <div class="vf-card vf-card--bordered panel maximizable" id="expDhPanel">
+      <div class="panel-head">
+        <h2>3 · Enter experiment metadata (DataHarmonizer)</h2>
+        <div class="inline">
+          <label class="muted" title="Push pairing NAME/SAMPLE into this grid as you edit them"><input type="checkbox" id="expDhAutoSync" checked style="width:auto"> Auto-update from pairings</label>
+          <button class="vf-button vf-button--secondary" type="button" id="expDhUpdateBtn" onclick="updateExperimentDhNow()">Update from pairings</button>
+          <button class="vf-button vf-button--secondary" type="button" id="expDhExportBtn" onclick="exportExpDhNow()">Save metadata</button>
+          <span class="muted" id="expDhSavedIndicator">Last saved: never</span>
+          <button class="icon-btn maximize-toggle-btn" type="button" onclick="togglePanelMax('expDhPanel')" title="Maximize panel" aria-label="Maximize panel">⛶</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="row" style="margin-bottom:10px">
+          <div><label class="vf-form__label">Schema</label><select class="vf-form__select" id="expSchemaSelect"></select></div>
+          <div style="align-self:flex-end"><button class="vf-button vf-button--secondary" onclick="applySchemaSelection('experiment')">Use this schema</button></div>
+        </div>
+        <div class="dh-embed-wrap" id="expDhWrap"><iframe class="dh-embed-frame" id="expDhFrame"></iframe></div>
+        <p class="muted" id="expDhMissing" style="display:none">Experiment metadata schema not built yet — see README
+          "Experiment metadata schema". Rows are kept in sync with the pairing table above
+          (<code id="EXP_KEY_TITLE_LABEL"></code>/<code id="EXP_SAMPLE_TITLE_LABEL"></code> columns); fill in the rest
+          (platform, instrument, library source/selection/strategy, …) here before submitting.</p>
+        <p class="vf-banner vf-banner--alert" id="expSchemaWarning" style="display:none"></p>
+      </div>
+    </div>
+    <div class="vf-card vf-card--bordered panel">
+      <h2>4 · Submit reads</h2>
+      <div class="row" style="margin-bottom:10px">
+        <div><label class="vf-form__label" for="readsPrefix">Submission prefix</label>
+          <input class="vf-form__input" id="readsPrefix" placeholder="filled in on first submit">
+          <p class="muted">Each run is submitted as <code>&lt;prefix&gt;_&lt;run name&gt;</code>. Keep it to resume a batch;
+            change it to submit the same run names as new runs.</p></div>
+      </div>
+      <div class="actions">
+        <button class="vf-button vf-button--primary helper-only" id="readsSubmitBtn" onclick="submitReads(true)" disabled>Submit reads to ENA</button>
+        <button class="vf-button vf-button--secondary helper-only" id="readsValidateBtn" onclick="submitReads(false)" disabled>Validate only</button>
+        <button class="vf-button vf-button--primary manual-only" id="readsScriptBtn" onclick="generateReadsScript(true)" disabled>Generate submit command</button>
+        <button class="vf-button vf-button--secondary manual-only" id="readsScriptValidateBtn" onclick="generateReadsScript(false)" disabled>Generate validate-only command</button>
+        <label class="inline" style="align-self:center"><input type="checkbox" id="forceReupload"><span class="muted">force re-upload all (ignore "already in ENA")</span></label>
+      </div>
+      <p class="muted">Runs already submitted with this prefix or already present in ENA are skipped automatically on
+        re-submit, so an interrupted batch resumes by just clicking Submit again. Tick a row's
+        <b>Re-upload</b> box (or the toggle above) to submit it again under a fresh alias.</p>
+      <p class="muted manual-only">Nothing is sent from this page in manual mode. After the command finishes in your
+        terminal, click <b>Generate</b> again: runs that reached ENA are recognised by their alias, drop out of the
+        new command, and show up in the table below — that's how results come back here.</p>
+      <div class="vf-banner vf-banner--alert" style="display:none" id="submitReadsBanner"></div>
+      <div class="manual-only" id="readsScriptWrap" style="display:none">
+        <h3 class="log-heading">Run this in a terminal</h3>
+        <p class="muted">Your Webin credentials are deliberately <b>not</b> written into the script — set them in the
+          shell first:<br>
+          <code>export WEBIN_USERNAME='Webin-XXXXX'</code><br>
+          <code>read -rs WEBIN_PASSWORD &amp;&amp; export WEBIN_PASSWORD</code></p>
+        <div class="actions">
+          <button class="vf-button vf-button--secondary" type="button" onclick="copyReadsScript()">Copy</button>
+          <button class="vf-button vf-button--secondary" type="button" onclick="downloadReadsScript()">Download .sh</button>
+        </div>
+        <pre class="log" id="readsScript"></pre>
+      </div>
+      <div class="log" id="readsLog"></div>
+      <div class="scroll" id="readsResults"></div>
+      <!-- Receipt above; what ENA now holds below. The run rows carry
+           process_status/process_date/process_error — whether ENA has finished
+           *archiving* the read files, which registering a run does not say. -->
+      <h3 class="log-heading">In ENA</h3>
+      <ena-browser id="readsGrid" entity="runs" mode="read" height="360" style="display:none"></ena-browser>
+      <p class="muted" id="readsGridEmpty">No reads have been submitted from this workspace. This confirmation table only shows submissions made here; use the Records tab to browse records already in your ENA account.</p>
+      <div class="actions">
+        <button class="vf-button vf-button--secondary" onclick="refreshReadsGrid()">Refresh from ENA</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- SCHEMA -->
+  <section class="vf-tabs__section" id="vf-tabs__section--schema">
+    <div class="vf-card vf-card--bordered panel">
+      <h2>Schema library</h2>
+      <p class="muted">Saved/imported LinkML schemas, persisted alongside the other backend files. Pick one
+        on the Samples or Reads tab to back that grid, or supply your own from disk below.</p>
+      <div class="scroll" id="schemaLibraryList"></div>
+      <div class="row" style="margin-top:12px">
+        <div><label class="vf-form__label">Supply your own schema file (.yaml, .xml, .xsd)</label>
+          <input type="file" id="schemaFilePicker" accept=".yaml,.yml,.xml,.xsd" onchange="importSchemaFile()"></div>
+      </div>
+      <div class="vf-banner vf-banner--alert" style="display:none" id="schemaLibraryBanner"></div>
+    </div>
+
+    <div class="vf-card vf-card--bordered panel">
+      <h2>Build a new schema</h2>
+      <p class="muted">Import fields from bundled ENA sample-checklist XML, ENA/SRA XSD, and/or an existing
+        saved schema. Selected sources are merged (earlier selections win on conflicting fields) and loaded
+        into the editor below.</p>
+      <div class="row">
+        <div><label class="vf-form__label">ENA checklists (XML)</label><select class="vf-form__select" id="schemaImportChecklists" multiple style="height:140px"></select>
+          <button class="vf-button vf-button--secondary" style="margin-top:6px; padding:3px 8px" type="button" onclick="clearSchemaMultiSelect('schemaImportChecklists')">Clear selection</button></div>
+        <div><label class="vf-form__label">ENA/SRA XSD</label><select class="vf-form__select" id="schemaImportXsd" multiple style="height:140px"></select>
+          <button class="vf-button vf-button--secondary" style="margin-top:6px; padding:3px 8px" type="button" onclick="clearSchemaMultiSelect('schemaImportXsd')">Clear selection</button></div>
+        <div><label class="vf-form__label">Existing saved schemas</label><select class="vf-form__select" id="schemaImportExisting" multiple style="height:140px"></select>
+          <button class="vf-button vf-button--secondary" style="margin-top:6px; padding:3px 8px" type="button" onclick="clearSchemaMultiSelect('schemaImportExisting')">Clear selection</button></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div><label class="vf-form__label">Name for the merged schema</label><input class="vf-form__input" id="schemaImportName" placeholder="e.g. my_custom_checklist"></div>
+      </div>
+      <div class="actions"><button class="vf-button vf-button--primary" onclick="buildImportedSchema()">Build &amp; open in editor</button></div>
+      <div class="vf-banner vf-banner--alert" style="display:none" id="schemaImportBanner"></div>
+    </div>
+
+    <div class="vf-card vf-card--bordered panel maximizable" id="schemaEditorPanel">
+      <div class="panel-head">
+        <h2>Edit / preview schema</h2>
+        <button class="icon-btn maximize-toggle-btn" type="button" onclick="togglePanelMax('schemaEditorPanel')" title="Maximize panel" aria-label="Maximize panel">⛶</button>
+      </div>
+      <div class="panel-body">
+        <div class="dh-embed-wrap" id="schemaEditorWrap"><iframe class="dh-embed-frame" id="schemaEditorFrame"></iframe></div>
+        <p class="muted" id="schemaEditorMissing" style="display:none">The dataharmonizer-template-builder sidecar isn't
+          reachable — start it (the <code>dhtb</code> service in docker-compose.yml) to edit schemas. You can still
+          select and save schemas without it.</p>
+        <div class="row" style="margin-top:10px">
+          <div><label class="vf-form__label">Save as / export filename</label><input class="vf-form__input" id="schemaSaveName" placeholder="e.g. my_custom_checklist"></div>
+          <div style="align-self:flex-end" class="inline">
+            <button class="vf-button vf-button--primary" onclick="saveEditorSchema()">Save to library</button>
+            <button class="vf-button vf-button--secondary" onclick="exportEditorSchema()">Export .yaml</button>
+          </div>
+        </div>
+        <div class="vf-banner vf-banner--alert" style="display:none" id="schemaEditorBanner"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- RECORDS -->
+  <section class="vf-tabs__section" id="vf-tabs__section--records">
+    <div class="vf-card vf-card--bordered panel">
+      <h2>Account records</h2>
+      <!-- Fetch criteria. These are criteria on the *request* (the toolkit
+           applies them, in the browser's Python, over what the Reports API returned); the
+           grid's own per-column filters are separate and client-side. -->
+      <div class="row">
+        <div><label class="vf-form__label">Entity</label><select class="vf-form__select" id="recEntity">
+          <option value="studies">studies</option>
+          <option value="samples">samples</option>
+          <option value="runs">runs</option>
+          <option value="experiments">experiments</option>
+          <option value="analyses">analyses</option>
+        </select></div>
+        <div><label class="vf-form__label">Search</label>
+          <input class="vf-form__input" id="recSearch" placeholder="search every column"></div>
+        <div><label class="vf-form__label">Linked to</label>
+          <input class="vf-form__input" id="recLinked" placeholder="accession, e.g. PRJEB1234"></div>
+        <div><label class="vf-form__label">Status</label><select class="vf-form__select" id="recStatus">
+          <option value="all">all</option><option value="private">private</option><option value="public">public</option>
+        </select></div>
+      </div>
+      <div class="actions">
+        <div class="inline"><input type="checkbox" id="recUnlinked"><label style="margin:0">unlinked only</label></div>
+        <div class="inline" title="Also read each record's full field set — every checklist attribute it was submitted with (and, on production, the ENA Portal's indexed fields). Slower: an extra request per 100 records."><input type="checkbox" id="recFullFields"><label style="margin:0">all fields</label></div>
+        <div class="inline" title="Edits and row actions are sent to ENA. Off on every page load."><input type="checkbox" id="recWrite"><label style="margin:0">write mode</label></div>
+        <button class="vf-button vf-button--secondary" type="button" id="recClear">Clear</button>
+        <button class="vf-button vf-button--primary" type="button" onclick="loadRecords()">Fetch</button>
+        <span class="muted" id="recCount"></span>
+      </div>
+      <div class="vf-banner vf-banner--alert" style="display:none" id="recBanner"></div>
+      <ena-browser id="recGrid" entity="studies" mode="read" height="600"></ena-browser>
+    </div>
+
+    <div class="vf-card vf-card--bordered panel">
+      <div class="panel-head">
+        <h2>MODIFY manifests</h2>
+        <span id="recManifestState" class="muted">no staged changes</span>
+        <button class="vf-button vf-button--secondary" type="button" id="recGenerate" disabled>Generate manifests</button>
+      </div>
+      <p id="recManifestEmpty" class="muted">
+        Nothing staged. Edit a cell in write mode, then generate the manifests — each one is the
+        exact XML document that would be sent to ENA, built from the record as ENA currently holds
+        it. Submission stays locked until the manifests for the current edits have been generated
+        here.
+      </p>
+      <div id="recManifests"></div>
+      <div class="actions">
+        <button class="vf-button vf-button--primary" type="button" id="recSubmit" disabled>Submit changes</button>
+      </div>
+    </div>
+
+    <div class="vf-card vf-card--bordered panel">
+      <div class="panel-head">
+        <h2>Submission log</h2>
+        <button class="icon-btn" type="button" id="recSubmitLogClear" title="Clear log" aria-label="Clear log">Clear</button>
+      </div>
+      <p class="muted">Everything this tab has sent to ENA, and everything ENA said back.</p>
+      <p id="recSubmitLogEmpty" class="muted">Nothing submitted from this tab yet.</p>
+      <div id="recSubmitLog"></div>
+    </div>
+    <div class="vf-card vf-card--bordered panel">
+      <div class="panel-head">
+        <h2>Debug log</h2>
+        <button class="icon-btn" type="button" onclick="clearLog('recLog')" title="Clear log" aria-label="Clear log">Clear</button>
+      </div>
+      <p class="muted">Logs each fetch, the field names present on the returned rows (including any
+        the table doesn't display), and the first raw row — useful for spotting why a linking
+        accession column (e.g. <code>study_accession</code>) came back blank.</p>
+      <div class="log" id="recLog"></div>
+    </div>
+  </section>
+
+</div><!-- vf-tabs-content -->
+</main>
+<dialog id="recDiffDialog">
+  <form method="dialog">
+    <h3 style="margin-top:0">Submit these changes to ENA?</h3>
+    <p id="recDiffEnv" class="muted"></p>
+    <div class="scroll" style="max-height:50vh"><table id="recDiffTable"></table></div>
+    <div class="actions" style="justify-content:flex-end">
+      <button class="vf-button vf-button--secondary" value="cancel">Cancel</button>
+      <button class="vf-button vf-button--primary" value="ok">Submit</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/static/vendor/ena-browser/ena-browser.iife.js"></script>
+<script src="/static/core.js"></script>
+<script src="/static/theme.js"></script>
+<script src="/static/workspace.js"></script>
+<script src="/static/credentials.js"></script>
+<script src="/static/dataharmonizer.js"></script>
+<script src="/static/schema.js"></script>
+<script src="/static/samples.js"></script>
+<script src="/static/reads.js"></script>
+<script src="/static/records.js"></script>
+<script src="/static/boot.js"></script>
+<script src="https://assets.emblstatic.net/vf/v2.5.28/scripts/scripts.js"></script>
+<!-- DIRECTORY PICKER MODAL -->
+<div class="modal-overlay" id="dirPickerModal" onclick="if(event.target===this)closeDirPicker()">
+  <div class="modal-box vf-card vf-card--bordered" style="max-width:560px">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
+      <h2 style="margin:0">Select reads directory</h2>
+      <button class="icon-btn" type="button" onclick="closeDirPicker()" title="Cancel">×</button>
+    </div>
+    <div id="dirPickerBreadcrumb" style="font-size:13px;color:var(--muted);margin-bottom:8px;word-break:break-all"></div>
+    <div id="dirPickerList" class="scroll" style="max-height:300px;border:1px solid var(--line);border-radius:4px;padding:4px"></div>
+    <div class="actions" style="margin-top:12px">
+      <button class="vf-button vf-button--primary" type="button" onclick="confirmDirPicker()">Select this folder</button>
+      <button class="vf-button vf-button--secondary" type="button" onclick="closeDirPicker()">Cancel</button>
+    </div>
+  </div>
+</div>
+<footer class="vf-footer | vf-u-background-color-ui--dark-grey">
+  <div class="vf-footer__inner">
+    <section class="vf-footer__legal">
+      <span>© EMBL-EBI 2026</span>
+      <a href="https://www.ebi.ac.uk" class="vf-footer__link">EMBL-EBI</a>
+      <a href="https://www.ebi.ac.uk/ena" class="vf-footer__link">ENA</a>
+      <a href="https://www.ebi.ac.uk/metagenomics" class="vf-footer__link">MGnify</a>
+      <a href="https://www.ebi.ac.uk/about/terms-of-use" class="vf-footer__link">Terms of use</a>
+    </section>
+  </div>
+</footer>
+</body>
+</html>

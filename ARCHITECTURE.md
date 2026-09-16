@@ -435,8 +435,13 @@ API) rather than hitting the real service in tests.
 
 ## 4. Reference Implementation
 
-[mimicc-ena-submission-assistant](.) is the reference implementation of
-this standard. Map of decision → where it lives:
+> **No longer true of this repo.** mimicc-ena-submission-assistant has since
+> become a static site with its Python running in the browser, and has no server
+> (see `STATIC_BROWSER_PLAN.md`). The map below describes it as it was up to
+> commit `7bea105`; read it there (`git show 7bea105:<path>`).
+
+[mimicc-ena-submission-assistant](.) was the reference implementation of
+this standard. Map of decision → where it lived:
 
 | Decision | Files |
 |---|---|
