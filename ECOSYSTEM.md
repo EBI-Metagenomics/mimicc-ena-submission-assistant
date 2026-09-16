@@ -113,7 +113,7 @@ logic is the Python submission stack running **in the browser** (Pyodide). It is
 **single-user**: all persistent state lives in the browser, and the only server is
 whatever serves the files (nginx in the Docker image, `scripts/serve_dist.py` locally).
 
-- **Python in the browser** (`server/pyodide/`, `server/static/py/`): every ENA
+- **Python in the browser** (`app/pyodide/`, `app/static/py/`): every ENA
   call — study/sample prepare + submit, record listing, MODIFY, lifecycle actions,
   reads suggest/plan/result — runs in a Pyodide Web Worker. The page calls
   `py("module.function", kwargs)`; `ena_bridge.py` routes `httpx` over
@@ -127,13 +127,12 @@ whatever serves the files (nginx in the Docker image, `scripts/serve_dist.py` lo
   `app.zip`, schemas/XSDs and the DataHarmonizer bundle. `schema_service.py` wraps
   `linkml-lib`: it names, imports and compiles schemas for the fixed DH template
   folders, in the browser; a service worker serves each grid's compiled schema.
-- **Frontend** (`server/static/`): `index.html` shell plus per-concern scripts
+- **Frontend** (`app/static/`): `index.html` shell plus per-concern scripts
   (`core.js` API clients, `credentials.js`, `workspace.js`, `records.js`,
   `samples.js`, `reads.js`, `schema.js`, `dataharmonizer.js`, `theme.js`,
   `boot.js`). The workspace (all entered state) and the reads resume ledger are kept in
   **IndexedDB**; Webin credentials in **sessionStorage** for the tab only. The
-  DataHarmonizer bundle is built in Docker and volume-mounted at
-  `server/static/dh/`; `ena-browser` is vendored under `server/static/vendor/`.
+  DataHarmonizer bundle is built in Docker and copied into the site at `/dh/`; `ena-browser` is vendored under `app/static/vendor/`.
 - **Schema artifacts** committed in the repo: `schemas/*.yaml` (LinkML) and
   `assets/ena_schema/` (ENA/SRA XSDs and checklist XMLs). User-saved schemas live in
   the browser (IndexedDB); the grids' compiled schemas in Cache Storage, served
@@ -253,7 +252,7 @@ a **Handsontable** grid with per-column filtering and sorting, column pinning/
 reordering/hiding, row selection, host-driven dynamic columns, and an optional edit
 mode that emits a change set. Written in **TypeScript**, built with **Vite** in
 library mode into an ESM bundle (Handsontable as a peer dependency) and a
-self-contained **IIFE** bundle the assistant vendors under `server/static/vendor/`
+self-contained **IIFE** bundle the assistant vendors under `app/static/vendor/`
 the same way it vendors the DataHarmonizer bundle — no npm build step is introduced.
 
 It is deliberately a *view*: it never talks to ENA's submission API, never builds a
@@ -355,7 +354,7 @@ and edits* schemas interactively (React + TS pays for itself).
   the same way. Upgrades happen by bumping a tag.
 - **ena-browser is vendored as a built artefact.** The assistant commits
   `dist/ena-browser.iife.js` + `.css` from a pinned release tag into
-  `server/static/vendor/ena-browser/` and loads them with plain `<script>`/`<link>`
+  `app/static/vendor/ena-browser/` and loads them with plain `<script>`/`<link>`
   tags. It depends on nothing else in the ecosystem — the only shared vocabulary is
   the Reports API field names (mirrored from `ena-api-client`'s models) and the ENA
   status values.

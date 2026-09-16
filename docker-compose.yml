@@ -30,7 +30,7 @@ services:
 
   # DataHarmonizer Template Builder: edit/preview LinkML schemas before
   # selecting them for a grid. Sibling service the main app
-  # embeds as an iframe (postMessage bridge); see server/static/schema.js.
+  # embeds as an iframe (postMessage bridge); see app/static/schema.js.
   dhtb:
     # See mimicc-server's platform comment above.
     platform: ${MIMICC_PLATFORM:-linux/arm64}

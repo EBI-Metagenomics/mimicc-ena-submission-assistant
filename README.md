@@ -51,7 +51,7 @@ only (sessionStorage) and sent nowhere but ENA and your local read-helper-app.
 ```
 Browser (static files from dist/: index.html, static/*.js, sw.js, config.json)
    │
-   ├── py() ──► Web Worker: Pyodide + app.zip (server/*.py, pinned EBI packages)
+   ├── py() ──► Web Worker: Pyodide + app.zip (app/*.py, pinned EBI packages)
    │              ena_service / read_assign / schema_service
    │              └── httpx over sync XHR ──► ENA Submit / Reports / Browser / Portal APIs (CORS, Basic auth)
    │
@@ -77,7 +77,7 @@ Local read-helper-app (127.0.0.1:9100, https://github.com/EBI-Metagenomics/read-
   `STATIC_BROWSER_PLAN.md` for how it got here.
 - **Python in the browser**: every ENA call, study/sample Prepare and submit,
   the records browser, the reads plan and schema import/compile run in a Pyodide
-  Web Worker (`server/static/py/`, `server/pyodide/`) over the unchanged
+  Web Worker (`app/static/py/`, `app/pyodide/`) over the unchanged
   `ena_service`/`read_assign`/`schema_service` modules. First use downloads
   Pyodide and its packages from jsDelivr/PyPI (~9 s cold, cached after); pages
   that never need Python never load it.
@@ -146,7 +146,7 @@ Point its `MIMICC_APP_ORIGIN` at the site's origin so the page may drive it.
 
 ### DataHarmonizer bundle build
 
-The Samples tab embeds a built DataHarmonizer bundle (`server/static/dh/`) with
+The Samples tab embeds a built DataHarmonizer bundle (`app/static/dh/`) with
 the MIMICC template, carrying the LinkML schema committed at
 `schemas/mimicc_sample.yaml` (filtered from `mimicc_sample_experiment.yaml`
 down to sample-scoped slots — see "Experiment metadata schema" below for the
@@ -203,12 +203,12 @@ templates:
   (`schema_service.compile_for_grid` → `linkml_lib.dataharmonizer_compile`, the
   same pure-Python compiler DH's own `script/linkml.py` performs) and puts the
   result in Cache Storage at `/templates/<folder>/schema.json` (`mimicc/`,
-  `mimicc_experiment/` or `study/`). A service worker (`server/static/sw.js`,
+  `mimicc_experiment/` or `study/`). A service worker (`app/static/sw.js`,
   served at `/sw.js`) answers DataHarmonizer's fetch of that file from the
   cache and falls back to the bundle's built default, so this takes effect on
   the next iframe reload — **no DataHarmonizer bundle rebuild needed** — and
   survives a browser restart with no Python loaded. Each cached schema is
-  tagged with the compiler version (`server/static/py/versions.js`); a stale
+  tagged with the compiler version (`app/static/py/versions.js`); a stale
   one is recompiled from the library on load, and deleting a grid's schema
   reverts that grid to its default. Selections are per browser: nothing is
   written into the shared bundle any more.
@@ -286,7 +286,7 @@ in practice both files now exist permanently.
   since the Samples tab just renders whatever the schema defines, with no app-side sync/merge logic
   reading specific column titles): the app syncs/merges by fixed, expected LinkML `title:` values
   (see `EXP_KEY_TITLE`/`EXP_SAMPLE_TITLE`/`EXP_FIELD_TITLES` near the top of the "Experiment metadata
-  DataHarmonizer panel" section in `server/static/app.js`) — your schema's slots must use these exact
+  DataHarmonizer panel" section in `app/static/dataharmonizer.js`) — your schema's slots must use these exact
   titles:
 
   | Manifest field | Required `title:` |
@@ -328,7 +328,7 @@ matching row, appends a new one otherwise).
 Record tables — anything showing rows that came from ENA's **Webin Reports API** —
 are rendered by [`ena-browser`](https://github.com/EBI-Metagenomics/ena-browser),
 a standalone, framework-free `<ena-browser>` custom element built on Handsontable.
-It is vendored as a prebuilt bundle (`server/static/vendor/ena-browser/`) at a pinned
+It is vendored as a prebuilt bundle (`app/static/vendor/ena-browser/`) at a pinned
 release tag and loaded with plain `<script>`/`<link>` tags — it introduces no npm
 build step, exactly like the embedded DataHarmonizer bundle.
 
@@ -427,7 +427,7 @@ with no extra wiring; the schema editor sidecar is pushed the resolved theme by
 Refresh the vendored bundle with `task vendor:ena-browser` after bumping
 `ENA_BROWSER_REF` in `Taskfile.yml`; the two downloaded files are committed (like
 the DataHarmonizer bundle) so image builds and the Playwright suites need no
-network fetch. `pre-commit` skips `server/static/vendor/` — reformatting a bundle
+network fetch. `pre-commit` skips `app/static/vendor/` — reformatting a bundle
 corrupts it.
 
 The plan this was built from — including the collisions it had to work around —
@@ -489,9 +489,9 @@ task serve                                # build dist/ and serve it on http://1
 ```
 
 Re-run `task serve` (or `task build:dist`) after editing anything under
-`server/` — the page is served from `dist/`, and `app.zip` bundles `server/*.py`.
+`app/` — the page is served from `dist/`, and `app.zip` bundles `app/*.py`.
 For the DataHarmonizer grids locally, build a bundle with
-`scripts/build_dh_template.sh`; it lands in `server/static/dh/`, which
+`scripts/build_dh_template.sh`; it lands in `app/static/dh/`, which
 `build_dist.py` picks up by default.
 
 The schemas/XSDs (`schemas/`, `assets/ena_schema/`) are committed directly in
@@ -535,7 +535,7 @@ COMPOSE_TEST=1 python -m pytest tests/test_compose_ui.py -q
 ## Layout
 
 ```
-server/            the app's source (no server any more — the name is historical)
+app/               the app's source: the page and the Python it runs in the browser
   static/            the page: index.html, *.js, sw.js, vendor/ena-browser/, py/ (worker.js, versions.js)
   pyodide/           browser-only Python: ena_bridge.py (httpx over sync XHR, py() entry point),
                      shims/pendulum.py
@@ -581,7 +581,7 @@ All sibling-repo code is pulled at a fixed git tag or full commit SHA, never a l
   in `[project.dependencies]`.
 - **`Taskfile.yml`** — `ENA_BROWSER_REF` (v0.1.2), the `ena-browser` release whose
   `ena-browser.iife.js` + `ena-browser.css` are vendored into
-  `server/static/vendor/ena-browser/` and **committed**. Bump the ref, then
+  `app/static/vendor/ena-browser/` and **committed**. Bump the ref, then
   `task vendor:ena-browser`, then commit the two files.
 - **`Dockerfile`** — `DATAHARMONIZER_REF` / `DH_BUILDER_REF` build
   args, and **`docker-compose.yml`** — the `read-helper-app` and `dhtb` services'

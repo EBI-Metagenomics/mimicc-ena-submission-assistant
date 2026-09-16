@@ -114,9 +114,8 @@ def test_maximize_controls_for_reads_and_dataharmonizer(page):
 
 
 def test_dh_bundle_iframe_loads(page):
-    # Real DataHarmonizer bundle (server/static/dh/, seeded at container
-    # start), not a stub — confirms the dh-builder image stage actually
-    # produced a usable bundle.
+    # Real DataHarmonizer bundle (built into the image's site at /dh/), not a
+    # stub — confirms the dh-builder image stage actually produced a usable bundle.
     page.click("a.vf-tabs__link:has-text('Samples')")
     page.wait_for_function("() => document.getElementById('dhFrame').src.includes('/dh/')")
     frame = page.frame_locator("#dhFrame")

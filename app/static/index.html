@@ -305,7 +305,7 @@
     </div>
     <div class="vf-card vf-card--bordered panel">
       <h2>2 · Prepare sample export</h2>
-      <p class="muted">Prepare pulls the current grid data from DataHarmonizer automatically. The server filters to
+      <p class="muted">Prepare pulls the current grid data from DataHarmonizer automatically. It is then filtered to
         sample/study fields and renames columns to ENA field names. If DataHarmonizer isn't available, upload or
         paste an exported <b>JSON</b> file below instead.</p>
       <div class="row">
@@ -548,7 +548,7 @@
     <div class="vf-card vf-card--bordered panel">
       <h2>Account records</h2>
       <!-- Fetch criteria. These are criteria on the *request* (the toolkit
-           applies them server-side over what the Reports API returned); the
+           applies them, in the browser's Python, over what the Reports API returned); the
            grid's own per-column filters are separate and client-side. -->
       <div class="row">
         <div><label class="vf-form__label">Entity</label><select class="vf-form__select" id="recEntity">

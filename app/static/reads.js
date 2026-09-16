@@ -735,7 +735,7 @@ function buildReadsScript(entries, doSubmit) {
   return lines.join("\n") + "\n";
 }
 
-/** Ask the server for the same plan submitReads() uses, then render it as a
+/** Build the same plan submitReads() uses, then render it as a
  *  command instead of running it. Results come back on the NEXT generate: a run
  *  that reached ENA is recognised by its stable alias and returns as a skip,
  *  which is what feeds the ledger and the "In ENA" grid. Nothing to relay back,

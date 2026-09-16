@@ -1,6 +1,6 @@
 # The image builds its own DataHarmonizer bundle and site (Dockerfile); keep
 # local build output and dev bundles out of the context.
-server/static/dh
-server/static/py/app.zip
+app/static/dh
+app/static/py/app.zip
 dist
 .venv

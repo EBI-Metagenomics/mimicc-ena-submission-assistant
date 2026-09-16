@@ -39,7 +39,7 @@ COPY --from=dh-builder-src /src/scripts/dh_build_steps.sh /tmp/dh_build_steps.sh
 # yarn build:web), then run the actual build once on the final invocation so
 # all staged folders — mimicc, mimicc_experiment and study — end up in the
 # bundle. The study folder is the fixed template slot the Studies tab points
-# at (server/schema_service.py: ROLE_FOLDERS["study"]); without it, selecting
+# at (app/schema_service.py: ROLE_FOLDERS["study"]); without it, selecting
 # a study schema fails and the study grid never loads.
 RUN DH_SKIP_BUILD=1 bash /tmp/dh_build_steps.sh /dh-src /tmp/schemas/mimicc_sample.yaml mimicc && \
     if [ -f /tmp/schemas/mimicc_experiment.yaml ]; then \
@@ -62,7 +62,7 @@ RUN pip install --no-cache-dir .
 
 COPY schemas/ schemas/
 COPY assets/ena_schema/ assets/ena_schema/
-COPY server/ server/
+COPY app/ app/
 COPY scripts/build_py_bundle.py scripts/build_dist.py scripts/
 COPY --from=dh-builder /dh-src/web/dist/ /dh-bundle/
 # Placeholders, not values: the runtime stage substitutes HELPER_PORT/DHTB_URL

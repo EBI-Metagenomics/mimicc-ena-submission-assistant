@@ -1,4 +1,4 @@
-"""Unit tests for server/schema_service.py.
+"""Unit tests for app/schema_service.py.
 
 Exercises what the browser's schema library calls through ``py()``: naming a
 schema for the library, the ENA XML/XSD import pipeline, and the compile that

@@ -40,7 +40,8 @@ dev = [
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-# The app runs via PYTHONPATH (server/), not as an importable distribution —
+# app/*.py is imported by path (scripts/ and tests/ put app/ on sys.path; the
+# browser loads it from app.zip), not as an importable distribution —
 # this table only exists so `pip install .` has something (empty) to build.
 [tool.setuptools]
 py-modules = []

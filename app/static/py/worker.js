@@ -3,7 +3,7 @@
 // Messages in:  { id, target: "module.function", kwargs, files }
 // Messages out: { id, result } | { id, error }
 // A worker (not the page) because the httpx transport is synchronous XHR —
-// see server/pyodide/ena_bridge.py. A *module* worker, because Pyodide 314
+// see app/pyodide/ena_bridge.py. A *module* worker, because Pyodide 314
 // refuses to start in a classic one.
 // ---------------------------------------------------------------------------
 

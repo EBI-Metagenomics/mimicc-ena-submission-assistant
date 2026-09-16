@@ -1,4 +1,4 @@
-"""Build ``server/static/py/app.zip``: the Python the browser worker runs.
+"""Build ``app/static/py/app.zip``: the Python the browser worker runs.
 
 Holds what micropip cannot fetch from PyPI — the pinned EBI git packages,
 copied from the synced ``.venv`` so they match ``uv.lock`` exactly — plus this
@@ -17,13 +17,11 @@ import zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-OUT = REPO / "server" / "static" / "py" / "app.zip"
+OUT = REPO / "app" / "static" / "py" / "app.zip"
 
 GIT_PACKAGES = ("ena_api", "ena_api_handler", "ena_submission_toolkit", "linkml_lib")
-APP_MODULES = [
-    REPO / "server" / f"{name}.py" for name in ("_bootstrap", "ena_service", "read_assign", "schema_service")
-]
-BROWSER_MODULES = [REPO / "server" / "pyodide" / "ena_bridge.py", REPO / "server" / "pyodide" / "shims" / "pendulum.py"]
+APP_MODULES = [REPO / "app" / f"{name}.py" for name in ("_bootstrap", "ena_service", "read_assign", "schema_service")]
+BROWSER_MODULES = [REPO / "app" / "pyodide" / "ena_bridge.py", REPO / "app" / "pyodide" / "shims" / "pendulum.py"]
 
 
 def _package_dir(name: str) -> Path:

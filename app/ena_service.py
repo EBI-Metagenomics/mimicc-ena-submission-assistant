@@ -14,7 +14,7 @@ behaviour. What is MIMICC-specific — the sample
 column filter, the DataHarmonizer plumbing, the schema-driven unit rules — is
 what remains here.
 
-Credentials are passed explicitly (held in server memory by ``main.py``) and
+Credentials are passed explicitly (from the browser tab, via ``py()``) and
 turned into a per-call ``WebinClient`` — nothing is read from or written to the
 environment or disk.
 """

@@ -1,4 +1,4 @@
-"""The browser bridge (server/pyodide/), exercised under CPython.
+"""The browser bridge (app/pyodide/), exercised under CPython.
 
 The transport runs against a fake ``js`` module standing in for the worker's
 ``XMLHttpRequest``; the real thing is covered by the Pyodide Playwright test in
@@ -18,7 +18,7 @@ import httpx
 import pendulum
 import pytest
 
-_PYODIDE_DIR = Path(__file__).resolve().parent.parent / "server" / "pyodide"
+_PYODIDE_DIR = Path(__file__).resolve().parent.parent / "app" / "pyodide"
 
 
 def _load(name: str, path: Path):

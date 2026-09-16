@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "server"))
+sys.path.insert(0, str(REPO / "app"))
 
 import schema_service  # noqa: E402
 

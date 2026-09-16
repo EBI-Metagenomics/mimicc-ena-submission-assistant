@@ -183,8 +183,8 @@ def build_manifest(record: dict[str, Any], workdir: Path, *, alias: str | None =
 def build_manifest_text(record: dict[str, Any], *, alias: str | None = None) -> tuple[str, str]:
     """Build the webin-cli "reads" manifest text for one run, without writing it.
 
-    Used by the hosted server to hand the manifest to the browser/local helper
-    (reads upload happens on the user's machine). Manifests reference read files
+    The page hands it to the local helper, or writes it into the manual-mode
+    script (reads upload happens on the user's machine). Manifests reference read files
     by basename only — the helper supplies the local input directory. Returns
     (alias, manifest_text). Raises ValueError if the record is invalid.
     """

@@ -11,21 +11,21 @@ tasks:
   vendor:ena-browser:
     desc: >
       Download the ena-browser IIFE bundle + CSS at ENA_BROWSER_REF into
-      server/static/vendor/ena-browser/. Re-run after bumping the tag.
+      app/static/vendor/ena-browser/. Re-run after bumping the tag.
     vars:
       ENA_BROWSER_REF: v0.1.3
     cmds:
-      - mkdir -p server/static/vendor/ena-browser
+      - mkdir -p app/static/vendor/ena-browser
       - for: ["ena-browser.iife.js", "ena-browser.css"]
         cmd: >
-          curl -fsSL -o server/static/vendor/ena-browser/{{.ITEM}}
+          curl -fsSL -o app/static/vendor/ena-browser/{{.ITEM}}
           https://github.com/EBI-Metagenomics/ena-browser/releases/download/{{.ENA_BROWSER_REF}}/{{.ITEM}}
 
   build:py:
     desc: >
-      Build server/static/py/app.zip, the Python the browser worker runs (pinned
+      Build app/static/py/app.zip, the Python the browser worker runs (pinned
       EBI packages from .venv + server modules). Re-run after `uv sync` or
-      editing server/*.py.
+      editing app/*.py.
     cmds:
       - .venv/bin/python scripts/build_py_bundle.py
 
@@ -33,7 +33,7 @@ tasks:
     desc: >
       Build dist/, the whole app as static files (scripts/build_dist.py). Pass
       --dh <bundle> to include a built DataHarmonizer bundle
-      (default server/static/dh, if built).
+      (default app/static/dh, if built).
     cmds:
       - .venv/bin/python scripts/build_dist.py {{.CLI_ARGS}}
 

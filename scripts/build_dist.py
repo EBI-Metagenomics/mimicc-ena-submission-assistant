@@ -14,7 +14,7 @@ already uses::
 Docker image builds with them set to ``${HELPER_PORT}``/``${DHTB_URL}`` and
 substitutes the real values when the container starts.
 
-Run: ``.venv/bin/python scripts/build_dist.py [--out dist] [--dh server/static/dh]``
+Run: ``.venv/bin/python scripts/build_dist.py [--out dist] [--dh app/static/dh]``
 (``task build:dist``).
 """
 
@@ -28,13 +28,13 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "server"))
+sys.path.insert(0, str(REPO / "app"))
 sys.path.insert(0, str(REPO / "scripts"))
 
 import build_py_bundle  # noqa: E402
 import ena_service  # noqa: E402
 
-STATIC = REPO / "server" / "static"
+STATIC = REPO / "app" / "static"
 # The schema each fixed grid folder is built from (Dockerfile dh-builder stage).
 # DataHarmonizer's build leaves only schema.json there, but Prepare reads the
 # LinkML schema.yaml — so the build puts the source beside it. A grid schema the

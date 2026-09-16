@@ -1,7 +1,7 @@
 .venv/
 __pycache__/
 *.pyc
-server/static/dh/
+app/static/dh/
 
 # Old local-dev schema library (before the library moved into the browser) —
 # may still hold schemas you saved; import them via the Schema tab's file picker.
@@ -29,6 +29,6 @@ htmlcov/
 .serena/
 
 # Browser Python bundle — built by scripts/build_py_bundle.py (task build:py)
-server/static/py/app.zip
+app/static/py/app.zip
 # Static build output — scripts/build_dist.py (task build:dist)
 dist/

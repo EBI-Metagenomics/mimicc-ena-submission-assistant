@@ -3,8 +3,8 @@
 // ---------------------------------------------------------------------------
 // Records browser: load an entity into the <ena-browser> grid, mirror the
 // write toggle into it, stage edits, submit them as a MODIFY, and run
-// lifecycle actions. The grid is a view — every ENA request is made
-// server-side by ena-submission-toolkit; nothing here builds XML.
+// lifecycle actions. The grid is a view — every ENA request is made by
+// ena-submission-toolkit in the browser's Python (enaPy); nothing here builds XML.
 // ---------------------------------------------------------------------------
 
 const ROW_ACTIONS = [
@@ -61,7 +61,7 @@ function attributeColumnSpecs() {
 }
 
 /** The fixed editable fields, plus this listing's checklist attributes. The
- *  server is the authority on both and refuses anything else: a tag the record
+ *  toolkit is the authority on both and refuses anything else: a tag the record
  *  does not already carry, and ENA's own `ENA-*` tags, come back as a failed
  *  manifest rather than a submission. */
 function editableColumnsNow() {

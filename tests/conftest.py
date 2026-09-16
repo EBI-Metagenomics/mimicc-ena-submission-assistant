@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "server"))
+sys.path.insert(0, str(REPO / "app"))
 
 
 def load_script(name: str):
