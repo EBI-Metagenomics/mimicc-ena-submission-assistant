@@ -42,7 +42,8 @@ async function api(path, opts = {}) {
 }
 
 // Call the app's Python in the browser (static/py/worker.js): `target` is
-// "module.function" in ena_service / read_assign / schema_service. The worker
+// "module.function" in ena_service / read_assign / schema_service. `files`
+// maps paths in Python's filesystem to URLs to fetch there first. The worker
 // starts on first use — Pyodide and its packages take seconds to load, so pages
 // that never need Python never pay for it.
 let _pyWorker = null;
@@ -70,11 +71,11 @@ function pyWorker() {
   return _pyWorker;
 }
 
-function py(target, kwargs = {}) {
+function py(target, kwargs = {}, files = {}) {
   return new Promise((resolve, reject) => {
     const id = ++_pySeq;
     _pyPending.set(id, { resolve, reject });
-    pyWorker().postMessage({ id, target, kwargs });
+    pyWorker().postMessage({ id, target, kwargs, files });
   });
 }
 

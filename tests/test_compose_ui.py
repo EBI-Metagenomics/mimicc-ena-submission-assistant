@@ -237,12 +237,12 @@ def _wait_for_dh_iframe_ready(page, frame_id):
     page.frame_locator(frame_id).locator(".ht_master .htCore tbody td").first.wait_for(timeout=15_000)
 
 
-def _wait_for_banner_text(page, selector, text, errors):
+def _wait_for_banner_text(page, selector, text, errors, timeout_ms=35_000):
     try:
         page.wait_for_function(
             "([selector, text]) => document.querySelector(selector)?.innerText.includes(text)",
             arg=[selector, text],
-            timeout=35_000,
+            timeout=timeout_ms,
         )
     except Exception as exc:
         banner_text = page.inner_text(selector)
@@ -308,3 +308,15 @@ def test_dhtb_sidecar_iframe_loads(page):
             return
         page.wait_for_timeout(200)
     raise AssertionError("dhtb sidecar iframe never loaded")
+
+
+def test_study_prepare_runs_in_the_browser_against_the_built_schema(page):
+    # The image builds app.zip (Dockerfile) and the DH bundle serves the study
+    # template's schema.yaml, which only exists in the real bundle — so this is
+    # the one place Prepare can run end to end, in the browser's Python.
+    page.click("a.vf-tabs__link:has-text('Studies')")
+    _wait_for_dh_iframe_ready(page, "#studyDhFrame")
+    page.click("#vf-tabs__section--studies button:has-text('Prepare')")
+    # First use loads Pyodide and its packages from the CDN/PyPI.
+    _wait_for_banner_text(page, "#studyPrepBanner", "Prepared", [], timeout_ms=180_000)
+    assert "Prepared 0 study record(s)" in page.inner_text("#studyPrepBanner")

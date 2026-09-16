@@ -121,7 +121,7 @@ def with_creds(client):
 # ---------------------------------------------------------------------------
 
 # A webin-cli log as the local helper would stream it back to the browser; the
-# browser relays the final log to /api/reads/result, which parses accessions.
+# browser turns the final log into a result row (read_assign.upload_result).
 MOCK_READS_LOG = (
     "INFO: validating manifest\n"
     "INFO: The submission has been completed successfully.\n"

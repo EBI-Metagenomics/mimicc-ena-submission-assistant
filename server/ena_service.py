@@ -29,6 +29,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 import _bootstrap  # schema/XSD asset paths — see _bootstrap.py
+import read_assign
 
 if TYPE_CHECKING:  # pragma: no cover
     from ena_api import WebinClient
@@ -204,6 +205,34 @@ def lookup_existing_runs(
     reads-submission resumability to detect "is this run already submitted?"
     on a resume."""
     return _records().find_runs_by_experiment_alias(creds, aliases, test=test, max_results=max_results)
+
+
+def plan_reads(
+    creds: Credentials,
+    runs: list[dict[str, Any]],
+    *,
+    test: bool = True,
+    prefix: str | None = None,
+    ledger: dict[str, dict[str, Any]] | None = None,
+    force_reupload: bool = False,
+) -> dict[str, Any]:
+    """The reads upload plan (``read_assign.plan_reads``), after one ENA lookup
+    for runs already submitted under their stable alias. A failed lookup is a
+    warning, not an error: the batch still submits."""
+    if not runs:
+        raise ValueError("No runs provided")
+    existing: dict[str, dict[str, str]] = {}
+    warnings: list[str] = []
+    candidates = read_assign.resume_candidates(runs, prefix=prefix, force_reupload=force_reupload)
+    if candidates:
+        try:
+            existing = lookup_existing_runs(creds, candidates, test=test)
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"Could not check ENA for existing runs ({exc}); proceeding to submit.")
+    plan = read_assign.plan_reads(
+        runs, prefix=prefix, ledger=ledger or {}, existing=existing, force_reupload=force_reupload
+    )
+    return {"plan": plan, "warnings": warnings}
 
 
 # ---------------------------------------------------------------------------
@@ -484,6 +513,17 @@ def prepare_studies(dh_export: dict[str, Any], *, dh_dir: Any) -> dict[str, Any]
         raise ValueError("No study schema selected. Use the Studies tab to select a schema first.")
     schema = linkml_io.load_yaml(schema_yaml)
     return prepare_dh_output.prepare_data(dh_export, schema)
+
+
+def prepare_sample_records(dh_export: dict[str, Any], *, where: str | None = DEFAULT_SAMPLE_FILTER) -> dict[str, Any]:
+    """``prepare_samples`` as the Samples tab shows it: the flat records."""
+    records = records_from_container(prepare_samples(dh_export, where=where))
+    return {"records": records, "count": len(records)}
+
+
+def prepare_study_records(dh_export: dict[str, Any], *, dh_dir: Any) -> dict[str, Any]:
+    """``prepare_studies`` as the Studies tab shows it: the flat records."""
+    return {"records": records_from_container(prepare_studies(dh_export, dh_dir=dh_dir))}
 
 
 def records_from_container(prepared: dict[str, Any]) -> list[dict[str, Any]]:

@@ -69,6 +69,10 @@ COPY schemas/ schemas/
 COPY assets/ena_schema/ assets/ena_schema/
 # App code
 COPY server/ server/
+# The Python the browser runs (Pyodide worker): the pinned EBI packages installed
+# above plus server modules, zipped into server/static/py/app.zip.
+COPY scripts/build_py_bundle.py scripts/build_py_bundle.py
+RUN python scripts/build_py_bundle.py
 # Django management entrypoint (e.g. `manage.py runserver` for local dev).
 COPY manage.py manage.py
 # Built DataHarmonizer bundle (see dh-builder stage above), staged separately

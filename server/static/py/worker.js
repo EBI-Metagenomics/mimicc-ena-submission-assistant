@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // Python worker: Pyodide + the app's submission stack, off the main thread.
-// Messages in:  { id, target: "module.function", kwargs }
+// Messages in:  { id, target: "module.function", kwargs, files }
 // Messages out: { id, result } | { id, error }
 // A worker (not the page) because the httpx transport is synchronous XHR —
 // see server/pyodide/ena_bridge.py. A *module* worker, because Pyodide 314
@@ -36,17 +36,39 @@ await micropip.install(${JSON.stringify(PYPI_REQUIREMENTS)})
 import ena_bridge
 ena_bridge.install()
 `);
-  return pyodide.pyimport("ena_bridge");
+  return { pyodide, call: pyodide.pyimport("ena_bridge").call };
 }
 
 const ready = boot();
 
-self.onmessage = async ({ data: { id, target, kwargs } }) => {
+/** Put the files a call reads into Pyodide's filesystem first ({ fsPath: url }).
+ *  Fetched every time — a selected schema changes under the same URL. A file
+ *  the server doesn't have is removed, so Python raises its own "not found". */
+async function provide(pyodide, files) {
+  for (const [path, url] of Object.entries(files || {})) {
+    const res = await fetch(url, { cache: "no-store" });
+    if (res.ok) {
+      pyodide.FS.mkdirTree(path.slice(0, path.lastIndexOf("/")) || "/");
+      pyodide.FS.writeFile(path, new Uint8Array(await res.arrayBuffer()));
+    } else {
+      try { pyodide.FS.unlink(path); } catch { /* was never there */ }
+    }
+  }
+}
+
+self.onmessage = async ({ data: { id, target, kwargs, files } }) => {
+  let bridge;
   try {
-    const bridge = await ready;
+    bridge = await ready;
+  } catch (e) {
+    self.postMessage({ id, error: `Python runtime failed to load: ${e.message || e}` });
+    return;
+  }
+  try {
+    await provide(bridge.pyodide, files);
     const out = JSON.parse(bridge.call(target, JSON.stringify(kwargs || {})));
     self.postMessage(out.error !== undefined ? { id, error: out.error } : { id, result: out.result });
   } catch (e) {
-    self.postMessage({ id, error: `Python runtime failed to load: ${e.message || e}` });
+    self.postMessage({ id, error: e.message || String(e) });
   }
 };

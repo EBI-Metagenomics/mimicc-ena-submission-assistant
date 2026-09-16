@@ -362,7 +362,7 @@ async function scanReads() {
 
 // Manual mode's scan. The directory picker hands us File objects, but only
 // their NAMES are used — no file contents are opened and nothing is uploaded.
-// The grouping itself is the server's (/api/reads/group), the same pairing
+// The grouping itself is read_assign.group_files (via py()), the same pairing
 // logic the helper's own scan applies, so the two modes can't drift apart.
 // The browser is never told the picked folder's real path, which is why
 // #readsLocalDir stays the user's own answer for webin-cli's -inputDir.
@@ -371,10 +371,8 @@ async function scanReadsFromPicker() {
   const files = [...(input?.files || [])];
   if (!files.length) return;
   try {
-    const r = await api("/api/reads/group", {
-      method: "POST", body: JSON.stringify({ names: files.map((f) => f.name) }),
-    });
-    applyScannedGroups(r.groups, `Found ${r.count} read group(s) among ${files.length} file(s).`);
+    const groups = await py("read_assign.group_files", { names: files.map((f) => f.name) });
+    applyScannedGroups(groups, `Found ${groups.length} read group(s) among ${files.length} file(s).`);
   } catch (e) {
     banner("readsBanner", false, e.message);
   } finally {
@@ -535,11 +533,11 @@ function readsPrefix() {
 }
 
 // Reads upload is browser-bridged:
-//   1. ask the server for a PLAN (which runs to upload vs. skip + manifest text),
+//   1. build a PLAN (which runs to upload vs. skip + manifest text; readsPlan),
 //   2. for each upload, hand the manifest to the LOCAL HELPER which runs
 //      webin-cli against the local files and streams the log,
-//   3. relay each outcome back to the server (/api/reads/result) to update the
-//      resume ledger. Reads never pass through the server.
+//   3. turn each outcome into a result row for the resume ledger. Read files
+//      never pass through this page.
 async function submitReads(doSubmit) {
   $("readsLog").textContent = "";
   $("readsResults").innerHTML = "";
@@ -555,9 +553,7 @@ async function submitReads(doSubmit) {
   if (!dir) { banner("submitReadsBanner", false, "Set your local reads directory in step 1."); return; }
 
   try {
-    const { plan, warnings } = await api("/api/reads/plan", { method: "POST", body: JSON.stringify({
-      runs, test: TEST, session_name: readsPrefix(), ledger: READS_RUNS, force_reupload: $("forceReupload").checked,
-    }) });
+    const { plan, warnings } = await readsPlan(runs);
     (warnings || []).forEach((w) => appendReadsLog("WARNING: " + w));
 
     const results = [];
@@ -614,7 +610,17 @@ async function refreshReadsGrid(results = []) {
   }
 }
 
-// Run one upload on the local helper and relay the outcome back to the server.
+/** Which runs to upload and which to skip (already done, or already in ENA
+ *  under their stable alias), with each upload's manifest text. */
+async function readsPlan(runs) {
+  if (!credsConfigured()) throw new Error("Credentials not set. Enter your Webin username and password.");
+  return py("ena_service.plan_reads", {
+    creds: CREDS, runs, test: TEST, prefix: readsPrefix(), ledger: READS_RUNS,
+    force_reupload: $("forceReupload").checked,
+  });
+}
+
+// Run one upload on the local helper and turn the outcome into a result row.
 function uploadOneViaHelper(entry, inputDir, doSubmit) {
   return new Promise(async (resolve) => {
     let job;
@@ -634,15 +640,13 @@ function uploadOneViaHelper(entry, inputDir, doSubmit) {
       if (m.line != null) appendReadsLog(m.line);
       if (m.done) {
         es.close();
-        // Relay the outcome to the server to update the ledger.
         let result;
         try {
-          const r = await api("/api/reads/result", { method: "POST", body: JSON.stringify({
+          result = await py("read_assign.upload_result", {
             name: entry.name, alias: entry.alias, stable_alias: entry.stable_alias,
             exit_code: m.exit_code, log: m.log || "", sample: entry.sample, study: entry.study,
             experiment_accession: m.experiment_accession, run_accession: m.run_accession,
-          }) });
-          result = r.result;
+          });
         } catch (e) {
           appendReadsLog(`ERROR recording result (${entry.name}): ${e.message}`);
           result = { name: entry.name, alias: entry.alias, sample: entry.sample, study: entry.study,
@@ -674,7 +678,7 @@ function recordLedger(r) {
 // ---------------------------------------------------------------------------
 // Manual mode: a webin-cli command instead of the helper
 // ---------------------------------------------------------------------------
-// Identical up to the plan — the server builds the same manifests either way.
+// Identical up to the plan — the same manifests either way.
 // Here they become a shell script the user runs themselves, so this page never
 // touches their read files and never needs a helper to be installed.
 
@@ -748,10 +752,7 @@ async function generateReadsScript(doSubmit) {
   } catch (e) { banner("submitReadsBanner", false, e.message); return; }
 
   try {
-    const { plan, warnings } = await api("/api/reads/plan", { method: "POST", body: JSON.stringify({
-      runs, test: TEST, session_name: readsPrefix(),
-      ledger: READS_RUNS, force_reupload: $("forceReupload").checked,
-    }) });
+    const { plan, warnings } = await readsPlan(runs);
     (warnings || []).forEach((w) => appendReadsLog("WARNING: " + w));
 
     const skipped = plan.filter((e) => e.action === "skip");

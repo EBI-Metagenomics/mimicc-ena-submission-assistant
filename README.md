@@ -62,10 +62,10 @@ Browser ── login cookie ──► Django server (server/config/, views_*.py)
    │  POST manifest + Webin creds
    ▼
 Local read-helper-app (127.0.0.1:9100, https://github.com/EBI-Metagenomics/read-helper-app) ── java -jar webin-cli.jar ──► ENA dropbox
-   │  SSE log stream ─► Browser ─► POST /api/reads/result (server updates the resume ledger)
+   │  SSE log stream ─► Browser (read_assign.upload_result in Pyodide; browser updates the resume ledger)
 
    ── or, in MANUAL mode (no helper) ──
-   Browser lists the reads folder itself (<input webkitdirectory>, names only) ─► POST /api/reads/group
+   Browser lists the reads folder itself (<input webkitdirectory>, names only) ─► read_assign.group_files (Pyodide)
    Browser renders the plan as a shell script ─► user pastes it into their terminal ── webin-cli ──► ENA dropbox
    Results come back on the next Generate: runs already in ENA are found by their stable alias.
 ```
@@ -80,8 +80,13 @@ Local read-helper-app (127.0.0.1:9100, https://github.com/EBI-Metagenomics/read-
   who can manage other accounts (Admin tab). Web logins are DB-backed cookies;
   CSRF uses Django's standard cookie/token middleware (skipped entirely in
   local mode — there's no login screen to attack in single-user mode).
-- **Reads**: the server builds the webin-cli manifest and the upload *plan*
-  (what to upload vs. skip, via the ledger + ENA Reports API), but the upload
+- **Python in the browser**: reads grouping, the upload plan, helper outcomes
+  and study/sample Prepare run in a Pyodide Web Worker (`server/static/py/`,
+  `server/pyodide/`), calling the same `ena_service`/`read_assign` functions
+  the server used to — see `STATIC_BROWSER_PLAN.md`. First use downloads
+  Pyodide and its packages from jsDelivr/PyPI (~9 s cold, cached after).
+- **Reads**: the browser builds the webin-cli manifest and the upload *plan*
+  (what to upload vs. skip, via the ledger + ENA Reports API), and the upload
   itself runs on the user's machine — reads never pass through the server. The
   Reads tab offers two routes to run it, chosen per session:
   - **Local helper app** — the [read-helper-app](https://github.com/EBI-Metagenomics/read-helper-app)
@@ -89,7 +94,7 @@ Local read-helper-app (127.0.0.1:9100, https://github.com/EBI-Metagenomics/read-
     folder and runs webin-cli, streaming its log back to the page.
   - **Manual** — no helper required. The browser lists the folder with a plain
     directory input (**file names only**; no contents read, nothing uploaded),
-    `/api/reads/group` pairs the mates, and the plan is rendered as a shell
+    `read_assign.group_files` pairs the mates, and the plan is rendered as a shell
     script the user pastes into their own terminal. Needs Java and
     [webin-cli](https://github.com/enasequence/webin-cli/releases) installed.
     Credentials are never written into the script — it reads
@@ -504,6 +509,9 @@ pip install pytest pytest-asyncio playwright   # or: uv sync (installs these too
 python manage.py migrate
 python manage.py bootstrap_admin         # creates/updates the admin account from env
 
+# Build the Python the browser runs (re-run after `uv sync` or editing server/*.py)
+python scripts/build_py_bundle.py        # or: task build:py
+
 # Run the server locally (reads submission needs the local read-helper-app running;
 # other tabs work without it). DEPLOYMENT_MODE defaults to local (auto-login).
 PYTHONPATH=server:. python manage.py runserver 0.0.0.0:9000
@@ -517,8 +525,10 @@ resolves them by default, with `ENA_DH_SCHEMA`/`ENA_DH_XSD`/
 ### Tests
 
 `pytest` (in-process Django test-client API tests + read-assignment unit tests)
-and Playwright (UI), mirroring `read-helper-app`'s patterns. No Docker or network
-needed — the webin-cli runner and `ena_service` calls are mocked.
+and Playwright (UI), mirroring `read-helper-app`'s patterns. No Docker needed —
+the webin-cli runner and `ena_service` calls are mocked, and UI tests stub the
+page's `py()` calls. The few tests that run real Pyodide need network access to
+jsDelivr and PyPI, and skip without it.
 
 The test-only packages are the `dev` dependency group in `pyproject.toml`, so
 `uv sync` installs them — and, just as importantly, does not prune them.

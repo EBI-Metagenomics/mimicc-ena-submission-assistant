@@ -18,6 +18,12 @@ Do not re-invent it. It lives in `tests/` and runs via `task` (see `Taskfile.yml
   exercises the built DH bundle, the fixed template folders, and the real
   cross-origin `dhtb` iframe. See README "Docker Compose tests".
 
+**Python in the browser.** Calls the page makes through `py()` (a Pyodide
+worker, `server/static/py/worker.js`) are stubbed in `test_ui.py` with
+`_stub_py` and asserted with `_py_calls` — never mock them at the HTTP layer.
+The logic behind them is tested as plain Python (`test_read_assign.py`,
+`test_ena_bridge.py`); the few `*_in_a_browser_worker` tests run real Pyodide.
+
 **Rule:** any change under `server/static/*` (tabs, DataHarmonizer panels, JS)
 or to the `Dockerfile` dh-builder stage MUST add or extend a Playwright test —
 `test_ui.py` for mockable behaviour, `test_compose_ui.py` for anything needing

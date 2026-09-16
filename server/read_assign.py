@@ -234,3 +234,155 @@ def parse_accessions(log_lines: list[str]) -> dict[str, str]:
     if run := re.search(r"\bERR\d+\b", text):
         result["run_accession"] = run.group(0)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Upload plan (resume) and helper outcomes
+# ---------------------------------------------------------------------------
+
+# Resume-ledger status values. The browser stores the ledger; these only read it.
+STATUS_DONE: Final = "done"
+STATUS_ALREADY_IN_ENA: Final = "already_in_ena"
+
+
+def _slug(text: str) -> str:
+    """Alias-safe slug: keep word chars, collapse the rest to '-'."""
+    s = re.sub(r"[^A-Za-z0-9._-]+", "-", str(text).strip()).strip("-")
+    return s or "x"
+
+
+def run_alias(prefix: str, run_name: str) -> str:
+    """Stable per-run alias, ``<prefix>_<run name>``. Identical across
+    re-submits with the same prefix — which is what lets a resume detect a run
+    already in ENA."""
+    return f"{_slug(prefix)}_{_slug(run_name)}"
+
+
+def _run_name(run: dict[str, Any], idx: int) -> str:
+    return run.get("NAME", f"run{idx}")
+
+
+def resume_candidates(runs: list[dict[str, Any]], *, prefix: str | None, force_reupload: bool = False) -> set[str]:
+    """The stable aliases worth looking up in ENA before planning: none
+    without a prefix, and none for runs being forced up again."""
+    if not prefix or force_reupload:
+        return set()
+    return {
+        run_alias(prefix, _run_name(run, idx))
+        for idx, run in enumerate(runs, start=1)
+        if not run.get("reupload", False)
+    }
+
+
+def _skip_entry(run: dict[str, Any], name: str, alias: str, accs: dict[str, Any], reason: str) -> dict[str, Any]:
+    """A plan row for a run skipped during resume (already submitted/in ENA)."""
+    return {
+        "name": name,
+        "action": "skip",
+        "alias": alias,
+        "sample": run.get("SAMPLE", ""),
+        "study": run.get("STUDY", ""),
+        "exit_code": 0,
+        "success": True,
+        "skipped": True,
+        "reason": reason,
+        "experiment_accession": accs.get("experiment_accession", ""),
+        "run_accession": accs.get("run_accession", ""),
+    }
+
+
+def plan_reads(
+    runs: list[dict[str, Any]],
+    *,
+    prefix: str | None,
+    ledger: dict[str, dict[str, Any]],
+    existing: dict[str, dict[str, str]],
+    force_reupload: bool = False,
+) -> list[dict[str, Any]]:
+    """Decide, per run, whether to submit (with its manifest text) or skip.
+
+    ``ledger`` is the browser's resume ledger (run name -> row); ``existing``
+    is what ENA already holds, keyed by stable alias (``resume_candidates``).
+    Without a prefix every run is a one-off with a timestamped alias. A forced
+    re-upload gets a fresh timestamped alias, since ENA aliases are permanent.
+    """
+    plan: list[dict[str, Any]] = []
+    for idx, run in enumerate(runs, start=1):
+        name = _run_name(run, idx)
+        stable = run_alias(prefix, name) if prefix else None
+        run_forced = force_reupload or run.get("reupload", False)
+
+        if stable and not run_forced:
+            row = ledger.get(name)
+            if (
+                row
+                and row.get("status") in (STATUS_DONE, STATUS_ALREADY_IN_ENA)
+                and (row.get("run_accession") or row.get("experiment_accession"))
+            ):
+                plan.append(_skip_entry(run, name, stable, row, "cached"))
+                continue
+            if stable in existing:
+                plan.append(_skip_entry(run, name, stable, existing[stable], "already_in_ena"))
+                continue
+
+        manifest_alias = stable
+        if stable and run_forced:
+            manifest_alias = f"{stable}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        try:
+            alias, manifest_text = build_manifest_text(run, alias=manifest_alias)
+        except ValueError as exc:
+            plan.append(
+                {
+                    "name": name,
+                    "action": "skip",
+                    "success": False,
+                    "skipped": True,
+                    "reason": "invalid",
+                    "messages": str(exc),
+                }
+            )
+            continue
+        plan.append(
+            {
+                "name": name,
+                "action": "submit",
+                "alias": alias,
+                "stable_alias": stable,
+                "manifest_filename": f"{alias}.manifest",
+                "manifest_text": manifest_text,
+                "sample": run.get("SAMPLE", ""),
+                "study": run.get("STUDY", ""),
+            }
+        )
+    return plan
+
+
+def upload_result(
+    *,
+    name: str,
+    alias: str | None = None,
+    stable_alias: str | None = None,
+    exit_code: int | None = None,
+    log: str = "",
+    sample: str = "",
+    study: str = "",
+    experiment_accession: str | None = None,
+    run_accession: str | None = None,
+) -> dict[str, Any]:
+    """A result row for one helper-run upload: accessions parsed from the
+    webin-cli log, overridden by any the helper reported itself."""
+    accs = parse_accessions(log.splitlines()) if log else {}
+    if experiment_accession:
+        accs["experiment_accession"] = experiment_accession
+    if run_accession:
+        accs["run_accession"] = run_accession
+    return {
+        "name": name,
+        "alias": alias,
+        "sample": sample,
+        "study": study,
+        "exit_code": exit_code,
+        "success": exit_code == 0,
+        "skipped": False,
+        **accs,
+    }

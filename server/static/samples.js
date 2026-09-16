@@ -14,7 +14,9 @@ async function prepareStudies() {
   try {
     const exportJson = dh.getExportJson();
     await saveStudyDhExport(exportJson, { silent: true });
-    const r = await api("/api/study/prepare", { method: "POST", body: JSON.stringify({ export: exportJson }) });
+    // The selected study schema, as the DataHarmonizer grid itself loads it.
+    const r = await py("ena_service.prepare_study_records", { dh_export: exportJson, dh_dir: "/dh" },
+      { "/dh/templates/study/schema.yaml": "/templates/study/schema.yaml" });
     window.__preparedStudies = r.records;
     banner("studyPrepBanner", true, `Prepared ${r.records.length} study record(s). Ready to submit.`);
     renderTable("studyPrepOut", r.records);
@@ -119,7 +121,9 @@ async function prepareSamples() {
     }
   }
   try {
-    const r = await api("/api/sample/prepare", { method: "POST", body: JSON.stringify({ export: exportJson, where: $("sampleFilter").value || null }) });
+    // _bootstrap.schema_path() resolves to /schemas/mimicc_sample.yaml in the worker.
+    const r = await py("ena_service.prepare_sample_records", { dh_export: exportJson, where: $("sampleFilter").value || null },
+      { "/schemas/mimicc_sample.yaml": "/schemas/mimicc_sample.yaml" });
     window.__prepared = r.records;
     banner("prepBanner", true, `Prepared ${r.count} sample record(s). Ready to submit.`);
     renderTable("prepOut", r.records);

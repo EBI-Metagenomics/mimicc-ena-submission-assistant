@@ -17,6 +17,9 @@ from django.http import FileResponse, HttpRequest, JsonResponse
 from django.views.static import serve as static_serve
 
 STATIC_DIR = pathlib.Path(__file__).resolve().parent / "static"
+# The bundled LinkML schemas, fetched by the browser's Python (py()) into its
+# own filesystem — the same files _bootstrap resolves server-side.
+SCHEMAS_DIR = pathlib.Path(__file__).resolve().parent.parent / "schemas"
 DH_DIR = STATIC_DIR / "dh"
 DH_TEMPLATES_DIR = DH_DIR / "templates"
 

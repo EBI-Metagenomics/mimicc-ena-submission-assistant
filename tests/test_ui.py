@@ -20,6 +20,30 @@ def _wait_for_workspace(pg):
     pg.wait_for_function("() => window.WORKSPACE_READY === true")
 
 
+def _stub_py(page, responses):
+    """Replace py() — the page's call into Python — with canned answers keyed by
+    target, recording each call in ``window.__pyCalls``. A response of
+    ``{"__error": msg}`` rejects. The real worker is covered by the Pyodide
+    tests at the end of this file."""
+    page.evaluate(
+        """(responses) => {
+            window.__pyCalls = [];
+            py = async (target, kwargs = {}, files = {}) => {
+                window.__pyCalls.push({ target, kwargs, files });
+                if (!(target in responses)) throw new Error('unstubbed py(): ' + target);
+                const answer = responses[target];
+                if (answer && answer.__error) throw new Error(answer.__error);
+                return answer;
+            };
+        }""",
+        responses,
+    )
+
+
+def _py_calls(page, target):
+    return page.evaluate("(target) => window.__pyCalls.filter((c) => c.target === target)", target)
+
+
 @pytest.fixture
 def page(live_server_url):
     with sync_playwright() as p:
@@ -136,14 +160,7 @@ def test_study_submit_displays_log_area_when_response_has_no_logs(page):
 
 def test_study_prepare_displays_table_and_banner_in_prepare_panel(page):
     page.click("a.vf-tabs__link:has-text('Studies')")
-    page.route(
-        "**/api/study/prepare",
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body='{"records":[{"alias":"study-a","TITLE":"Study A"}]}',
-        ),
-    )
+    _stub_py(page, {"ena_service.prepare_study_records": {"records": [{"alias": "study-a", "TITLE": "Study A"}]}})
     # studyDhApi() is normally backed by the DH iframe; stub it directly so
     # Prepare can run without a real DataHarmonizer bundle in this test.
     page.evaluate("() => { studyDhApi = () => ({ getExportJson: () => ({}) }); }")
@@ -153,17 +170,17 @@ def test_study_prepare_displays_table_and_banner_in_prepare_panel(page):
     assert "Prepared 1 study record(s)" in page.inner_text("#studyPrepBanner")
     # The old shared banner must NOT pick up prepare feedback anymore.
     assert page.inner_text("#studyBanner").strip() == ""
+    # Python reads the selected study schema from where the grid loads it.
+    (call,) = _py_calls(page, "ena_service.prepare_study_records")
+    assert call["kwargs"]["dh_dir"] == "/dh"
+    assert call["files"] == {"/dh/templates/study/schema.yaml": "/templates/study/schema.yaml"}
 
 
 def test_sample_prepare_displays_table_like_study(page):
     page.click("a.vf-tabs__link:has-text('Samples')")
-    page.route(
-        "**/api/sample/prepare",
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body='{"records":[{"alias":"sample-a","TITLE":"Sample A"}],"count":1}',
-        ),
+    _stub_py(
+        page,
+        {"ena_service.prepare_sample_records": {"records": [{"alias": "sample-a", "TITLE": "Sample A"}], "count": 1}},
     )
     # No DH iframe is loaded in this test environment, so dhApi() returns
     # null and Prepare falls back to the textarea, matching the documented
@@ -173,6 +190,18 @@ def test_sample_prepare_displays_table_like_study(page):
     page.wait_for_selector("#prepOut table")
     assert "sample-a" in page.inner_text("#prepOut")
     assert "Prepared 1 sample record(s)" in page.inner_text("#prepBanner")
+    (call,) = _py_calls(page, "ena_service.prepare_sample_records")
+    assert call["kwargs"]["dh_export"] == {"Container": {}}
+    assert call["files"] == {"/schemas/mimicc_sample.yaml": "/schemas/mimicc_sample.yaml"}
+
+
+def test_sample_prepare_shows_python_errors(page):
+    page.click("a.vf-tabs__link:has-text('Samples')")
+    _stub_py(page, {"ena_service.prepare_sample_records": {"__error": "Unknown filter slot: nope"}})
+    page.fill("#dhExport", '{"Container": {}}')
+    page.click("#vf-tabs__section--samples button:has-text('Prepare')")
+    page.wait_for_function("() => document.getElementById('prepBanner').innerText.includes('Unknown filter slot')")
+    assert page.is_disabled("#sampleSubmitBtn")
 
 
 def test_iframe_loses_focus_on_outside_click(page):
@@ -683,23 +712,23 @@ def test_reads_submit_merges_experiment_metadata(page):
         ],
     )
 
-    captured = {}
-
-    def capture(route):
-        captured["body"] = route.request.post_data_json
-        # Respond with an empty plan so submitReads() finishes without needing
-        # the local helper (which isn't running in this test).
-        route.fulfill(status=200, content_type="application/json", body='{"plan": [], "warnings": []}')
-
+    # An empty plan, so submitReads() finishes without needing the local helper
+    # (which isn't running in this test).
+    _stub_py(page, {"ena_service.plan_reads": {"plan": [], "warnings": []}})
     # Pretend the local upload helper is running + a reads dir is set, so the
-    # flow proceeds to request the plan from the server.
-    page.evaluate("() => { HELPER_OK = true; document.getElementById('readsLocalDir').value = '/tmp/reads'; }")
-    page.route("**/api/reads/plan", capture)
+    # flow proceeds to build the plan.
+    page.evaluate(
+        """() => { HELPER_OK = true; CREDS = { username: 'Webin-test', password: 'secret' };
+                   document.getElementById('readsLocalDir').value = '/tmp/reads'; }"""
+    )
     page.evaluate("() => submitReads(true)")
     page.wait_for_timeout(500)
 
-    assert captured.get("body"), "submitReads() never reached /api/reads/plan"
-    run = captured["body"]["runs"][0]
+    calls = _py_calls(page, "ena_service.plan_reads")
+    assert calls, "submitReads() never built a plan"
+    body = calls[0]["kwargs"]
+    assert body["creds"] == {"username": "Webin-test", "password": "secret"}
+    run = body["runs"][0]
     assert run["NAME"] == "runA"
     assert run["SAMPLE"] == "ERS111"
     assert run["STUDY"] == "ERP111"
@@ -712,16 +741,30 @@ def test_reads_submit_merges_experiment_metadata(page):
     # A blank submission prefix is filled in once and kept, so a re-run resumes.
     prefix = page.input_value("#readsPrefix")
     assert prefix.startswith("sub-")
-    assert captured["body"]["session_name"] == prefix
+    assert body["prefix"] == prefix
 
 
 def test_reads_plan_uses_the_submission_prefix(page):
-    captured = []
-    page.on("request", lambda req: "/api/reads/plan" in req.url and captured.append(req.post_data_json))
     page.click("a.vf-tabs__link:has-text('Reads')")
     page.fill("#readsPrefix", "batch-7")
     _generate_manual_script(page, [_MANUAL_SUBMIT_ENTRY])
-    assert captured[0]["session_name"] == "batch-7"
+    assert _py_calls(page, "ena_service.plan_reads")[0]["kwargs"]["prefix"] == "batch-7"
+
+
+def test_reads_plan_needs_credentials(page):
+    page.evaluate("() => { CREDS = { username: '', password: '' }; }")
+    _stub_py(page, {"ena_service.plan_reads": {"plan": [], "warnings": []}})
+    page.click("a.vf-tabs__link:has-text('Reads')")
+    page.select_option("#readsMode", "manual")
+    page.evaluate(
+        """() => { RUN_ROWS = [{ NAME: 'runA', SAMPLE: 'ERS1', STUDY: 'ERP1', paired: false, FASTQ: 'a.fq.gz' }]; }"""
+    )
+    _inject_fake_experiment_dh(page, [{"Experiment name": "runA", "Sample alias": "ERS1"}])
+    page.evaluate("() => generateReadsScript(true)")
+    page.wait_for_function(
+        "() => document.getElementById('submitReadsBanner').innerText.includes('Credentials not set')"
+    )
+    assert _py_calls(page, "ena_service.plan_reads") == []
 
 
 # ---------------------------------------------------------------------------
@@ -748,16 +791,31 @@ def test_reads_mode_toggle_swaps_helper_and_manual_controls(page):
 
 
 def test_reads_manual_directory_picker_lists_runs(page, tmp_path):
-    """The picker hands the browser file names only; the pairing is the server's
-    (/api/reads/group), so it matches what the helper's own scan would produce."""
+    """The picker hands Python file names only; the pairing is
+    read_assign.group_files, so it matches what the helper's own scan produces."""
     for name in ("runA_R1.fastq.gz", "runA_R2.fastq.gz", "README.md"):
         (tmp_path / name).write_text("x")
 
     page.click("a.vf-tabs__link:has-text('Reads')")
     page.select_option("#readsMode", "manual")
+    _stub_py(
+        page,
+        {
+            "read_assign.group_files": [
+                {
+                    "group": "runA",
+                    "files": ["runA_R1.fastq.gz", "runA_R2.fastq.gz"],
+                    "paired": True,
+                    "files_by_mate": {"1": "runA_R1.fastq.gz", "2": "runA_R2.fastq.gz"},
+                }
+            ]
+        },
+    )
     # A webkitdirectory input takes a directory path, not file payloads.
     page.set_input_files("#readsDirInput", str(tmp_path))
     page.wait_for_function("() => RUN_ROWS.length > 0")
+    (call,) = _py_calls(page, "read_assign.group_files")
+    assert sorted(call["kwargs"]["names"]) == ["README.md", "runA_R1.fastq.gz", "runA_R2.fastq.gz"]
 
     assert page.evaluate("() => RUN_ROWS.map(r => r.NAME)") == ["runA"]
     assert page.evaluate("() => RUN_ROWS[0].paired") is True
@@ -806,14 +864,8 @@ def _generate_manual_script(page, plan, do_submit=True, test_env=True):
             }
         ],
     )
-    page.route(
-        "**/api/reads/plan",
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"plan": plan, "warnings": []}),
-        ),
-    )
+    _stub_py(page, {"ena_service.plan_reads": {"plan": plan, "warnings": []}})
+    page.evaluate("() => { if (!CREDS.username) CREDS = { username: 'Webin-test', password: 'secret' }; }")
     page.evaluate(f"() => {{ TEST = {json.dumps(test_env)}; }}")
     page.evaluate(f"() => generateReadsScript({json.dumps(do_submit)})")
     page.wait_for_timeout(500)
@@ -897,12 +949,11 @@ def test_reads_submit_blocks_without_matching_experiment_row(page):
     # Experiment grid is "loaded" but has no row for runB.
     _inject_fake_experiment_dh(page, [])
 
-    submitted = {"called": False}
-    page.route("**/api/reads/plan", lambda route: submitted.update(called=True) or route.continue_())
+    _stub_py(page, {})
     page.evaluate("() => submitReads(true)")
     page.wait_for_timeout(300)
 
-    assert submitted["called"] is False
+    assert _py_calls(page, "ena_service.plan_reads") == []
     assert "No experiment metadata row found" in page.inner_text("#submitReadsBanner")
 
 
@@ -1124,6 +1175,55 @@ def test_python_stack_runs_in_a_browser_worker(page, py_bundle):
     assert validated is None
     assert seen["authorization"].startswith("Basic ")
     assert refused.startswith("refused: Not callable")
+
+
+def test_python_prepares_and_plans_in_a_browser_worker(page, py_bundle):
+    """Phase 3's calls against the real worker: the schema a call needs is
+    fetched into Python's filesystem, linkml filters and renames in the
+    browser, and a reads plan is built after an ENA lookup."""
+    page.route(
+        "**/ena/submit/report/**",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", headers={"access-control-allow-origin": "*"}, body="[]"
+        ),
+    )
+    export = {
+        "Container": {
+            "MIMICC_SampleExperiments": [
+                {
+                    "Sample alias (ENA sample alias)": "MIMICC_A_1",
+                    "Sample title": "MIMICC bioreactor A t1",
+                    "LIBRARY_STRATEGY": "AMPLICON",
+                }
+            ]
+        }
+    }
+    run = {
+        "NAME": "runA", "STUDY": "ERP1", "SAMPLE": "ERS1", "PLATFORM": "ILLUMINA", "INSTRUMENT": "Illumina MiSeq",
+        "LIBRARY_SOURCE": "METAGENOMIC", "LIBRARY_SELECTION": "PCR", "LIBRARY_STRATEGY": "AMPLICON",
+        "FASTQ": "runA.fastq.gz",
+    }  # fmt: skip
+    samples, study_error, plan = page.evaluate(
+        """async ({ exportJson, run }) => [
+            await py('ena_service.prepare_sample_records',
+                     { dh_export: exportJson, where: HEALTH.default_sample_filter },
+                     { '/schemas/mimicc_sample.yaml': '/schemas/mimicc_sample.yaml' }),
+            await py('ena_service.prepare_study_records', { dh_export: {}, dh_dir: '/dh' },
+                     { '/dh/templates/study/schema.yaml': '/templates/study/schema.yaml' })
+                .then(() => 'resolved', (e) => e.message),
+            await py('ena_service.plan_reads',
+                     { creds: { username: 'Webin-1', password: 'pw' }, runs: [run], prefix: 'batch-7' }),
+        ]""",
+        {"exportJson": export, "run": run},
+    )
+
+    assert samples["count"] == 1
+    assert samples["records"][0]["SAMPLE_TITLE"] == "MIMICC bioreactor A t1"
+    assert "LIBRARY_STRATEGY" not in samples["records"][0]
+    # No DataHarmonizer bundle in this environment, so no study schema is served.
+    assert "No study schema selected" in study_error
+    assert plan["warnings"] == []
+    assert plan["plan"][0]["alias"] == "batch-7_runA"
 
 
 def test_py_rejects_when_the_worker_cannot_start(page):
