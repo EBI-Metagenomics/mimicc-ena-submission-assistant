@@ -118,9 +118,8 @@
   #runTable tbody tr.assignable:hover { background:var(--panel); }
   .icon-btn { background:var(--btn2-bg); color:var(--btn2-fg); border:1px solid var(--line); border-radius:6px; padding:3px 7px; cursor:pointer; width:auto; }
   .icon-btn.danger { color:var(--bad); }
-  .session-chip { display:inline-flex; align-items:center; gap:8px; font-size:12px; padding:2px 4px 2px 10px;
-                  border:1px solid var(--line); border-radius:12px; }
-  .session-chip #sessionName { font-weight:600; }
+  .workspace-chip { display:inline-flex; align-items:center; gap:8px; font-size:12px; padding:2px 4px 2px 10px;
+                    border:1px solid var(--line); border-radius:12px; }
   .modal-overlay { display:none; position:fixed; inset:0; z-index:10100; background:rgba(0,0,0,.55);
                    align-items:flex-start; justify-content:center; padding:48px 16px; overflow:auto; }
   .modal-overlay.show { display:flex; }
@@ -129,7 +128,6 @@
                  border-bottom:1px solid var(--line); }
   .session-row:last-child { border-bottom:0; }
   .session-row .meta { color:var(--muted); font-size:11px; }
-  body.no-session main { filter:blur(2px); pointer-events:none; user-select:none; }
   .panel.maximized .dh-embed-wrap { height:100%; max-height:none; resize:none; }
   /* Let flex allocate the remaining space after the panel controls and any
      visible status banner. A literal height:100% here overflows the body by
@@ -143,6 +141,14 @@
   .vf-navigation__link img { display:inline-block; height:20px; width:auto; vertical-align:middle; }
   /* Font size: make VF form elements match body text size */
   .vf-form__input, .vf-form__select, .vf-form__textarea { font-size:inherit; font-family:inherit; }
+  /* Reads has two routes to ENA — the local helper app, or a webin-cli command
+     the user runs themselves. One class decides which controls exist. It goes on
+     <body> because the VF tabs JS copies each section's id
+     onto its tab anchor, so #vf-tabs__section--reads is not a unique element.
+     !important because several of these are also shown/hidden by inline style
+     (detectHelper, the generated script), which outranks a plain class rule. */
+  body.reads-mode-manual .helper-only,
+  body:not(.reads-mode-manual) .manual-only { display:none !important; }
   /* Hero: content-wide only, with generous vertical padding */
   .vf-hero { display:block; width:fit-content; padding-top:2rem; padding-bottom:2rem; margin-bottom:1.5rem; }
   .vf-hero__content { max-width:none; margin:0; padding:0; }
@@ -168,38 +174,17 @@
     </ul>
   </nav>
 </header>
-<!-- SESSION PICKER (shown on load until a session is active) -->
-<div class="modal-overlay" id="sessionModal">
-  <div class="modal-box vf-card vf-card--bordered">
-    <h2>Submission session</h2>
-    <p class="muted">All of this session's work — DataHarmonizer data, form fields, logs and result
-      tables — is saved in this browser under its name and restored when you reopen it. Use
-      <b>Download</b> to back a session up to a file (the browser is the only copy), and <b>Import</b>
-      to restore one. Credentials are never saved to a session.</p>
-    <h3>Open existing</h3>
-    <div class="scroll" id="sessionList" style="max-height:240px"><p class="muted" style="padding:10px">Loading…</p></div>
-    <h3>Create new</h3>
-    <div class="row">
-      <div style="flex:2"><label class="vf-form__label">Session name</label><input class="vf-form__input" id="newSessionName" placeholder="e.g. MIMICC run A 2026-06"></div>
-      <div style="align-self:flex-end"><button class="vf-button vf-button--primary" onclick="createSession()">Create &amp; open</button></div>
-    </div>
-    <h3>Backup</h3>
-    <div class="actions">
-      <button class="vf-button vf-button--secondary" onclick="downloadSession()">Download current session</button>
-      <label class="vf-button vf-button--secondary" style="margin:0">Import session…<input type="file" id="sessionImportFile" accept="application/json,.json" onchange="importSession()" style="display:none"></label>
-    </div>
-    <div class="vf-banner vf-banner--alert" style="display:none" id="sessionBanner"></div>
-  </div>
-</div>
 <main>
 <section class="vf-hero vf-hero--400">
   <div class="vf-hero__content | vf-box vf-stack vf-stack--400">
     <h1 class="vf-hero__heading">ENA Submission Assistant</h1>
     <div class="env">
-      <span class="session-chip" id="sessionChip" title="Current submission session">
-        <span id="sessionName">no session</span>
-        <span class="muted" id="sessionSaved"></span>
-        <button class="icon-btn" type="button" onclick="openSessionModal()" title="Switch session">Switch…</button>
+      <span class="workspace-chip" id="workspaceChip"
+            title="Your work is saved in this browser only. Download a copy to back it up or move it to another machine.">
+        <span class="muted" id="workspaceSaved">not saved yet</span>
+        <button class="icon-btn" type="button" onclick="downloadWorkspace()">Download</button>
+        <label class="icon-btn" style="margin:0">Import…<input type="file" id="workspaceImportFile" accept="application/json,.json" onchange="importWorkspace()" style="display:none"></label>
+        <button class="icon-btn danger" type="button" onclick="clearWorkspace()" title="Start over with an empty workspace">Clear</button>
       </span>
       <span class="creds-status" id="credStatus">credentials: not set</span>
       <span class="vf-badge vf-badge--primary" id="envPill">TEST</span>
@@ -291,7 +276,7 @@
            the Records tab, in one place. -->
       <h3 class="log-heading">In ENA</h3>
       <ena-browser id="studyGrid" entity="studies" mode="read" height="360" style="display:none"></ena-browser>
-      <p class="muted" id="studyGridEmpty">No studies have been submitted in this session. This confirmation table only shows submissions made here; use the Records tab to browse records already in your ENA account.</p>
+      <p class="muted" id="studyGridEmpty">No studies have been submitted from this workspace. This confirmation table only shows submissions made here; use the Records tab to browse records already in your ENA account.</p>
     </div>
   </section>
 
@@ -349,7 +334,7 @@
            on the Records tab. -->
       <h3 class="log-heading">In ENA</h3>
       <ena-browser id="sampleGrid" entity="samples" mode="read" height="360" style="display:none"></ena-browser>
-      <p class="muted" id="sampleGridEmpty">No samples have been submitted in this session. This confirmation table only shows submissions made here; use the Records tab to browse records already in your ENA account.</p>
+      <p class="muted" id="sampleGridEmpty">No samples have been submitted from this workspace. This confirmation table only shows submissions made here; use the Records tab to browse records already in your ENA account.</p>
     </div>
   </section>
 
@@ -357,20 +342,40 @@
   <section class="vf-tabs__section" id="vf-tabs__section--reads">
     <div class="vf-card vf-card--bordered panel">
       <h2>1 · Find your read files (local)</h2>
-      <p class="muted">Your FASTQ/BAM/CRAM files stay on your machine — they upload <b>directly to ENA</b> via the
-        local helper app and never pass through the server. Paired-end mates (<code>_R1/_R2</code> or
-        <code>_1/_2</code>) are grouped automatically. <span id="helperStatus" class="vf-badge">checking helper…</span></p>
-      <div id="helperMissing" class="vf-banner vf-banner--alert vf-banner--warning" style="display:none">
+      <p class="muted">Your FASTQ/BAM/CRAM files stay on your machine — they go <b>directly to ENA</b> and never pass
+        through this server. Paired-end mates (<code>_R1/_R2</code> or <code>_1/_2</code>) are grouped
+        automatically.</p>
+      <label class="vf-form__label" for="readsMode">How do you want to run the upload?</label>
+      <select class="vf-form__select" id="readsMode" onchange="onReadsModeChange()">
+        <option value="helper">Local helper app — read-helper-app runs webin-cli for me</option>
+        <option value="manual">Manual — give me a command to run myself</option>
+      </select>
+      <p class="muted helper-only" style="margin-top:8px">
+        <span id="helperStatus" class="vf-badge">checking helper…</span></p>
+      <div id="helperMissing" class="helper-only vf-banner vf-banner--alert vf-banner--warning" style="display:none">
         The local <b>reads upload helper</b> isn't running, so reads can't be scanned or uploaded. Start it (see the
-        <code>read-helper-app</code> app), then <a href="#" onclick="detectHelper();return false">re-check</a>.
+        <code>read-helper-app</code> app), then <a href="#" onclick="detectHelper();return false">re-check</a>, or
+        switch to <b>Manual</b> above.
       </div>
+      <p class="muted manual-only" style="margin-top:8px">Choosing your reads folder below reads the
+        <b>file names only</b> — no file contents are opened and nothing is uploaded. You'll get a script to paste
+        into a terminal, which needs Java and
+        <a href="https://github.com/enasequence/webin-cli/releases" target="_blank" rel="noopener">webin-cli</a>
+        installed on your machine.</p>
       <label class="vf-form__label">Local reads directory (absolute path on your machine)</label>
       <div style="display:flex;gap:8px;align-items:center">
         <input class="vf-form__input" id="readsLocalDir" placeholder="/Users/me/mimicc/reads" style="flex:1">
-        <button class="vf-button vf-button--secondary" type="button" onclick="browseDir()">Browse…</button>
+        <button class="vf-button vf-button--secondary helper-only" type="button" onclick="browseDir()">Browse…</button>
       </div>
+      <p class="muted manual-only">Used as <code>-inputDir</code> in the generated command. The browser isn't allowed
+        to see the real path of the folder you pick, so type or paste it here.</p>
       <div class="actions">
-        <button class="vf-button vf-button--primary" id="scanReadsBtn" onclick="scanReads()">Scan</button>
+        <button class="vf-button vf-button--primary helper-only" id="scanReadsBtn" onclick="scanReads()">Scan</button>
+        <label class="vf-button vf-button--secondary manual-only" id="readsDirPickLabel"
+               style="display:inline-block; text-align:center; cursor:pointer">
+          Choose reads folder…<input type="file" id="readsDirInput" webkitdirectory directory multiple
+                                     onchange="scanReadsFromPicker()" style="display:none">
+        </label>
         <button class="vf-button vf-button--secondary" onclick="suggestSamples()">Auto-assign samples</button>
       </div>
     </div>
@@ -434,15 +439,38 @@
     </div>
     <div class="vf-card vf-card--bordered panel">
       <h2>4 · Submit reads</h2>
+      <div class="row" style="margin-bottom:10px">
+        <div><label class="vf-form__label" for="readsPrefix">Submission prefix</label>
+          <input class="vf-form__input" id="readsPrefix" placeholder="filled in on first submit">
+          <p class="muted">Each run is submitted as <code>&lt;prefix&gt;_&lt;run name&gt;</code>. Keep it to resume a batch;
+            change it to submit the same run names as new runs.</p></div>
+      </div>
       <div class="actions">
-        <button class="vf-button vf-button--primary" id="readsSubmitBtn" onclick="submitReads(true)" disabled>Submit reads to ENA</button>
-        <button class="vf-button vf-button--secondary" id="readsValidateBtn" onclick="submitReads(false)" disabled>Validate only</button>
+        <button class="vf-button vf-button--primary helper-only" id="readsSubmitBtn" onclick="submitReads(true)" disabled>Submit reads to ENA</button>
+        <button class="vf-button vf-button--secondary helper-only" id="readsValidateBtn" onclick="submitReads(false)" disabled>Validate only</button>
+        <button class="vf-button vf-button--primary manual-only" id="readsScriptBtn" onclick="generateReadsScript(true)" disabled>Generate submit command</button>
+        <button class="vf-button vf-button--secondary manual-only" id="readsScriptValidateBtn" onclick="generateReadsScript(false)" disabled>Generate validate-only command</button>
         <label class="inline" style="align-self:center"><input type="checkbox" id="forceReupload"><span class="muted">force re-upload all (ignore "already in ENA")</span></label>
       </div>
-      <p class="muted">Runs already submitted in this session or already present in ENA are skipped automatically on
+      <p class="muted">Runs already submitted with this prefix or already present in ENA are skipped automatically on
         re-submit, so an interrupted batch resumes by just clicking Submit again. Tick a row's
         <b>Re-upload</b> box (or the toggle above) to submit it again under a fresh alias.</p>
+      <p class="muted manual-only">Nothing is sent from this page in manual mode. After the command finishes in your
+        terminal, click <b>Generate</b> again: runs that reached ENA are recognised by their alias, drop out of the
+        new command, and show up in the table below — that's how results come back here.</p>
       <div class="vf-banner vf-banner--alert" style="display:none" id="submitReadsBanner"></div>
+      <div class="manual-only" id="readsScriptWrap" style="display:none">
+        <h3 class="log-heading">Run this in a terminal</h3>
+        <p class="muted">Your Webin credentials are deliberately <b>not</b> written into the script — set them in the
+          shell first:<br>
+          <code>export WEBIN_USERNAME='Webin-XXXXX'</code><br>
+          <code>read -rs WEBIN_PASSWORD &amp;&amp; export WEBIN_PASSWORD</code></p>
+        <div class="actions">
+          <button class="vf-button vf-button--secondary" type="button" onclick="copyReadsScript()">Copy</button>
+          <button class="vf-button vf-button--secondary" type="button" onclick="downloadReadsScript()">Download .sh</button>
+        </div>
+        <pre class="log" id="readsScript"></pre>
+      </div>
       <div class="log" id="readsLog"></div>
       <div class="scroll" id="readsResults"></div>
       <!-- Receipt above; what ENA now holds below. The run rows carry
@@ -450,7 +478,7 @@
            *archiving* the read files, which registering a run does not say. -->
       <h3 class="log-heading">In ENA</h3>
       <ena-browser id="readsGrid" entity="runs" mode="read" height="360" style="display:none"></ena-browser>
-      <p class="muted" id="readsGridEmpty">No reads have been submitted in this session. This confirmation table only shows submissions made here; use the Records tab to browse records already in your ENA account.</p>
+      <p class="muted" id="readsGridEmpty">No reads have been submitted from this workspace. This confirmation table only shows submissions made here; use the Records tab to browse records already in your ENA account.</p>
       <div class="actions">
         <button class="vf-button vf-button--secondary" onclick="refreshReadsGrid()">Refresh from ENA</button>
       </div>
@@ -604,7 +632,7 @@
 <script src="/static/vendor/ena-browser/ena-browser.iife.js"></script>
 <script src="/static/core.js"></script>
 <script src="/static/theme.js"></script>
-<script src="/static/sessions.js"></script>
+<script src="/static/workspace.js"></script>
 <script src="/static/credentials.js"></script>
 <script src="/static/dataharmonizer.js"></script>
 <script src="/static/schema.js"></script>

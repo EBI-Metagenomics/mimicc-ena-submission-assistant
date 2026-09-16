@@ -11,8 +11,9 @@ It runs two ways from one codebase, selected by `DEPLOYMENT_MODE`:
 - **hosted** — multi-user on a shared server. Username/password accounts gate
   access; session state and intermediate files live on the server (in Postgres);
   studies/samples are submitted server-side; and **reads upload goes direct from
-  each user's machine to ENA** via a small local helper (the server never
-  touches read files).
+  each user's machine to ENA** — via a small local helper, or via a `webin-cli`
+  command the user runs themselves (the server never touches read files either
+  way).
 
 It ties together three existing tools:
 
@@ -20,7 +21,7 @@ It ties together three existing tools:
 |---|---|---|
 | Create/modify/list/delete **studies & samples** | [`ena-api-client`](../ena-api-client) + [`ena-submission-toolkit`](https://github.com/EBI-Metagenomics/ena-submission-toolkit) | `WebinClient` REST submission (server-side) + the `submit_study`/`submit_sample` batch builders |
 | Enter **sample metadata** | [DataHarmonizer](../DataHarmonizer) | embedded spreadsheet UI (Samples tab) → export → filter/rename → submit |
-| Submit **reads** | [`read-helper-app`](../read-helper-app) | a local **[read-helper-app](https://github.com/EBI-Metagenomics/read-helper-app)** Electron app runs Webin-CLI via Java on the user's machine; the browser bridges manifest (server) → helper → result (server) |
+| Submit **reads** | [`read-helper-app`](../read-helper-app), or nothing at all | **Helper mode:** a local **[read-helper-app](https://github.com/EBI-Metagenomics/read-helper-app)** Electron app runs Webin-CLI via Java on the user's machine; the browser bridges manifest (server) → helper → result (server). **Manual mode:** no helper — the browser lists the reads folder itself and hands the user a `webin-cli` command to paste into a terminal |
 
 New glue added here:
 
@@ -62,6 +63,11 @@ Browser ── login cookie ──► Django server (server/config/, views_*.py)
    ▼
 Local read-helper-app (127.0.0.1:9100, https://github.com/EBI-Metagenomics/read-helper-app) ── java -jar webin-cli.jar ──► ENA dropbox
    │  SSE log stream ─► Browser ─► POST /api/reads/result (server updates the resume ledger)
+
+   ── or, in MANUAL mode (no helper) ──
+   Browser lists the reads folder itself (<input webkitdirectory>, names only) ─► POST /api/reads/group
+   Browser renders the plan as a shell script ─► user pastes it into their terminal ── webin-cli ──► ENA dropbox
+   Results come back on the next Generate: runs already in ENA are found by their stable alias.
 ```
 
 - **Database**: Django's ORM over **PostgreSQL**, with Django serving the HTTP
@@ -76,9 +82,20 @@ Local read-helper-app (127.0.0.1:9100, https://github.com/EBI-Metagenomics/read-
   local mode — there's no login screen to attack in single-user mode).
 - **Reads**: the server builds the webin-cli manifest and the upload *plan*
   (what to upload vs. skip, via the ledger + ENA Reports API), but the upload
-  itself runs on the user's machine in the [read-helper-app](https://github.com/EBI-Metagenomics/read-helper-app)
-  (built from a pinned tag, see "Pinned dependency versions" below) — reads
-  never pass through the server.
+  itself runs on the user's machine — reads never pass through the server. The
+  Reads tab offers two routes to run it, chosen per session:
+  - **Local helper app** — the [read-helper-app](https://github.com/EBI-Metagenomics/read-helper-app)
+    (built from a pinned tag, see "Pinned dependency versions" below) scans the
+    folder and runs webin-cli, streaming its log back to the page.
+  - **Manual** — no helper required. The browser lists the folder with a plain
+    directory input (**file names only**; no contents read, nothing uploaded),
+    `/api/reads/group` pairs the mates, and the plan is rendered as a shell
+    script the user pastes into their own terminal. Needs Java and
+    [webin-cli](https://github.com/enasequence/webin-cli/releases) installed.
+    Credentials are never written into the script — it reads
+    `$WEBIN_USERNAME`/`$WEBIN_PASSWORD` from the shell. There is no log to paste
+    back: re-running **Generate** finds anything already in ENA by its stable
+    alias, which is what updates the ledger and the "In ENA" table.
 
 ## Install & run
 
@@ -211,10 +228,10 @@ templates:
 
 The Samples tab's **Export to Prepare** button and its 30s autosave pull the current grid data
 straight out of the embedded DataHarmonizer iframe (same-origin, via
-`iframe.contentWindow.dataHarmonizer.getExportJson()`), persist it to the active session
-(`POST /api/sessions/{id}/dh-export/sample` → `<id>/dh_export.json`) and populate the `#dhExport`
+`iframe.contentWindow.dataHarmonizer.getExportJson()`), persist it to the browser workspace
+(IndexedDB) and populate the `#dhExport`
 textarea that the **Prepare** step already reads — no manual File → Save As → upload round trip. On
-reopening a session the saved export is loaded **back into the grid** via
+reload the saved export is loaded **back into the grid** via
 `iframe.contentWindow.dataHarmonizer.loadExportJson(...)`. The Reads tab's experiment-metadata panel
 (below) uses the same mechanism under `kind=experiment`.
 
@@ -369,10 +386,10 @@ Manifest/XML building for modifications stays in `ena-submission-toolkit`.
 change-history stack. They do not serve the submission workflow and can be added
 independently later.
 
-**Session state.** Sessions persist each grid's layout (column order, pins, hidden
+**Workspace state.** The workspace persists each grid's layout (column order, pins, hidden
 columns, widths) and filters, and never its rows: a saved row shows the status it had
-when it was saved, which after a release or a suppress is the wrong one. Restoring a
-session re-fetches instead, with the saved layout applied *before* the rows arrive —
+when it was saved, which after a release or a suppress is the wrong one. A reload
+re-fetches instead, with the saved layout applied *before* the rows arrive —
 a column the grid first meets in the data arrives hidden, and that sticks.
 
 **Usage sketch:**
@@ -423,45 +440,53 @@ corrupts it.
 The plan this was built from — including the collisions it had to work around —
 is in [`ENA_BROWSER_PLAN.md`](ENA_BROWSER_PLAN.md).
 
-## Submission sessions
+## Workspace
 
-All work is organised around a **named submission session**, picked or created when the app opens
-(the tabs stay locked until one is active; the header shows the current session and a **Switch…**
-button). Everything about a session is saved to disk and restored when you reopen it:
+There are no named sessions. The app keeps **one workspace** in this browser and restores it on
+load, with no prompt:
 
-- **What's persisted** — every text field, checkbox and selection, the DataHarmonizer grid data,
-  all result tables, and the Reads/Records logs. Saving is automatic (debounced as you type, plus
-  immediately after submits); the header shows "saved …". **Credentials are never saved** — re-enter
-  them after a restart.
-- **Where** — in **PostgreSQL**, owned per user (the `SubmissionSession` model: the full UI snapshot,
-  both DataHarmonizer grid exports, and the reads log are columns; the per-run reads ledger is the
-  related `ReadsRun` model). Session **names are unique per user**, so two users can have a session of
-  the same name. (This replaces the old single-user SQLite registry + per-session files on disk.)
-- **Resumable reads** — each run gets a stable, session-scoped alias. The server's upload **plan**
-  skips runs already submitted in this session or already present in ENA (checked via the Reports
-  API) and shows their existing accessions, so an interrupted batch resumes by just clicking
-  **Submit** again. Tick a run's **Re-upload** box (or the global "force re-upload all" toggle) to
-  submit it again under a fresh alias (ENA aliases are permanent, so a forced re-upload necessarily
-  creates a new experiment/run).
+- **What's persisted** — every text field, checkbox and selection, the three DataHarmonizer grids'
+  data, all result tables, the Reads/Records logs, and the reads resume ledger. Saving is automatic
+  (debounced as you type, plus immediately after submits); the header shows "saved …".
+  **Credentials are never saved** — re-enter them after a restart.
+- **Where** — IndexedDB in this browser profile, which is the **only copy**. A private window loses
+  it on close; clearing site data deletes it. Use **Download** in the header to back it up or move
+  it to another machine, **Import…** to restore one (an old `.session.json` imports too), and
+  **Clear** to start over.
+- **One at a time** — two submissions side by side in one browser profile are no longer possible.
+  Download one before clearing, and import it again later.
+- **Resumable reads** — each run is submitted under the alias `<submission prefix>_<run name>`.
+  The prefix is a field on the Reads tab, filled in on first submit if blank. The upload **plan**
+  skips runs already submitted from this workspace or already present in ENA under that alias
+  (checked via the Reports API), so an interrupted batch resumes by just clicking **Submit** again.
+  Tick a run's **Re-upload** box (or the global "force re-upload all" toggle) to submit it again
+  under a fresh alias (ENA aliases are permanent, so a forced re-upload necessarily creates a new
+  experiment/run). A browser that had sessions adopts the most recently used one on first load,
+  with its name as the prefix.
 
 ## Using it
 
 0. **Sign in** (hosted mode only) — with your app account; local mode skips this and signs you in
    as admin automatically.
-1. **Session** — create or open a named session (required before the tabs unlock).
 2. **Credentials** — enter your Webin username/password (memory only; also forwarded to the local
    read-helper-app when it's running, so it can upload).
 3. **Studies** — create a study → note the `PRJEB…` accession.
 4. **Samples** — enter metadata in DataHarmonizer, click **Export to Prepare** (autosaves every
    30s too — see "Export integration" above), **Prepare** (filter + rename), then **Submit** with
    checklist `ERC000025` → `ERS…`/`SAMEA…`.
-5. **Reads** — make sure the **read-helper-app** is running (the Reads tab shows "helper: running"),
-   enter the absolute path to your **local** reads directory, **Scan** (the helper lists read
-   groups), **Auto-assign samples** (or export/import the pairing as TSV), fill in
-   platform/instrument/library fields in the **experiment metadata** DataHarmonizer panel (synced
-   from the pairings — see "Experiment metadata schema" above), then **Submit reads to ENA**. The
-   browser asks the server for the manifest/plan, the helper runs webin-cli locally and streams its
-   log, and the experiment + run accessions are recorded back. Re-submit to resume.
+5. **Reads** — pick how you want to run the upload at the top of the tab. With the
+   **local helper app**: make sure the **read-helper-app** is running (the tab shows "helper:
+   running"), enter the absolute path to your **local** reads directory and **Scan** (the helper
+   lists read groups). In **manual** mode (the default when no helper is detected): click **Choose
+   reads folder…** — only the file names are read, nothing is uploaded — and type the folder's
+   absolute path into the box, which becomes webin-cli's `-inputDir`.
+   Either way, continue with **Auto-assign samples** (or export/import the pairing as TSV) and fill
+   in platform/instrument/library fields in the **experiment metadata** DataHarmonizer panel (synced
+   from the pairings — see "Experiment metadata schema" above). Then **Submit reads to ENA** (helper
+   mode: the helper runs webin-cli locally and streams its log back, and the experiment + run
+   accessions are recorded) or **Generate submit command** (manual mode: copy the script into a
+   terminal and run it yourself). Re-submit — or re-generate — to resume; runs already in ENA are
+   skipped.
 6. **Records** — browse account records and release/hold/suppress/cancel.
 7. **Admin** (admins only) — create/delete user accounts and reset passwords.
 

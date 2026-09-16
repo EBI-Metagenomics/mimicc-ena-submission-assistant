@@ -4,7 +4,7 @@ Unlike ``test_ui.py`` (an in-process WSGI thread with ``ena_service`` mocked),
 this drives the actual built images: the real stateless server and a real
 ``dhtb`` sidecar container reached over the network. There's no way to
 monkeypatch a function inside a process this test doesn't run, so this file
-only covers what doesn't depend on mocked ENA data (page load, sessions, tab
+only covers what doesn't depend on mocked ENA data (page load, workspace restore, tab
 switching, the DH bundle iframe, the dhtb sidecar iframe) — the
 ENA-data-dependent tests in ``test_ui.py`` stay there.
 
@@ -34,13 +34,8 @@ _PORT = os.environ.get("MIMICC_PORT", "19000")
 _DHTB_PORT = os.environ.get("MIMICC_DHTB_PORT", "18765")
 
 
-def _open_session(pg):
-    pg.wait_for_selector("#sessionModal.show")
-    name = f"compose-ui-test-{int(time.time() * 1000)}"
-    pg.fill("#newSessionName", name)
-    pg.click("#sessionModal button:has-text('Create & open')")
-    pg.wait_for_selector("#sessionModal:not(.show)", state="attached")
-    pg.wait_for_function("() => !document.body.classList.contains('no-session')")
+def _wait_for_workspace(pg):
+    pg.wait_for_function("() => window.WORKSPACE_READY === true")
 
 
 @pytest.fixture(scope="session")
@@ -74,7 +69,7 @@ def page(compose_url):
         browser = p.chromium.launch()
         pg = browser.new_page()
         pg.goto(compose_url)
-        _open_session(pg)
+        _wait_for_workspace(pg)
         yield pg
         browser.close()
 

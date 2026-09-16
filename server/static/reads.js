@@ -6,6 +6,25 @@
 // The local reads directory the helper scans/uploads from (on the user's machine).
 function readsLocalDir() { return ($("readsLocalDir").value || "").trim(); }
 
+// Two routes to ENA: the local helper app runs webin-cli for the user, or the
+// user runs it themselves from a generated command. The mode only decides which
+// controls exist (see the .helper-only/.manual-only rules in index.html) and
+// what happens at the very end — pairing, experiment metadata, the manifests
+// and the resume ledger are shared by both.
+function readsMode() { return $("readsMode")?.value || "helper"; }
+
+function applyReadsMode() {
+  document.body.classList.toggle("reads-mode-manual", readsMode() === "manual");
+}
+
+function onReadsModeChange() {
+  READS_MODE_CHOSEN = true;
+  applyReadsMode();
+  scheduleSave();
+}
+
+applyReadsMode();
+
 let _dirPickerPath = "/";
 
 async function browseDir() {
@@ -85,21 +104,24 @@ function blankRun(group) {
 // ---------------------------------------------------------------------------
 const PAIRING_TSV_COLS = ["NAME", "SAMPLE", "STUDY", "paired", "FASTQ1", "FASTQ2", "FASTQ"];
 
+function downloadText(filename, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 function exportPairingsTsv() {
   if (!RUN_ROWS.length) { banner("readsBanner", false, "Nothing to export — scan or pair some reads first."); return; }
   const lines = [PAIRING_TSV_COLS.join("\t")];
   RUN_ROWS.forEach((r) => {
     lines.push(PAIRING_TSV_COLS.map((c) => String(r[c] ?? "").replace(/\t|\n/g, " ")).join("\t"));
   });
-  const blob = new Blob([lines.join("\n") + "\n"], { type: "text/tab-separated-values" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "read-sample-pairings.tsv";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  downloadText("read-sample-pairings.tsv", lines.join("\n") + "\n", "text/tab-separated-values");
   banner("readsBanner", true, `Exported ${RUN_ROWS.length} pairing(s).`);
 }
 
@@ -317,6 +339,15 @@ $("pairSamples").addEventListener("ena-browser:selection-change", (e) => {
   renderRunTable();   // re-applies the .assignable affordance
 });
 
+/** Both scans end here: whoever found the read groups, they become run rows. */
+function applyScannedGroups(groups, message) {
+  RUN_ROWS = groups.map(blankRun);
+  renderRunTable();
+  banner("readsBanner", true, message);
+  syncPairingsToExperimentDh();
+  scheduleSave();
+}
+
 async function scanReads() {
   const dir = readsLocalDir();
   if (!dir) { banner("readsBanner", false, "Enter the absolute path to your local reads directory."); return; }
@@ -325,12 +356,31 @@ async function scanReads() {
   }
   try {
     const r = await helperApi("/api/scan", { method: "POST", body: JSON.stringify({ host_dir: dir }) });
-    RUN_ROWS = r.groups.map(blankRun);
-    renderRunTable();
-    banner("readsBanner", true, `Found ${r.count} read group(s) in ${r.host_dir}.`);
-    syncPairingsToExperimentDh();
-    scheduleSave();
+    applyScannedGroups(r.groups, `Found ${r.count} read group(s) in ${r.host_dir}.`);
   } catch (e) { banner("readsBanner", false, e.message); }
+}
+
+// Manual mode's scan. The directory picker hands us File objects, but only
+// their NAMES are used — no file contents are opened and nothing is uploaded.
+// The grouping itself is the server's (/api/reads/group), the same pairing
+// logic the helper's own scan applies, so the two modes can't drift apart.
+// The browser is never told the picked folder's real path, which is why
+// #readsLocalDir stays the user's own answer for webin-cli's -inputDir.
+async function scanReadsFromPicker() {
+  const input = $("readsDirInput");
+  const files = [...(input?.files || [])];
+  if (!files.length) return;
+  try {
+    const r = await api("/api/reads/group", {
+      method: "POST", body: JSON.stringify({ names: files.map((f) => f.name) }),
+    });
+    applyScannedGroups(r.groups, `Found ${r.count} read group(s) among ${files.length} file(s).`);
+  } catch (e) {
+    banner("readsBanner", false, e.message);
+  } finally {
+    // Cleared so re-picking the same folder fires change again.
+    if (input) input.value = "";
+  }
 }
 async function suggestSamples() {
   if (!RUN_ROWS.length) { banner("readsBanner", false, "Scan first."); return; }
@@ -348,9 +398,9 @@ async function suggestSamples() {
 }
 function runStatusCell(name) {
   const led = READS_RUNS[name];
-  if (!led) return { text: "—", title: "not yet submitted in this session" };
+  if (!led) return { text: "—", title: "not yet submitted from this workspace" };
   const acc = led.run_accession || led.experiment_accession || "";
-  if (led.status === "done") return { text: `✓ done ${acc}`.trim(), title: "submitted in this session" };
+  if (led.status === "done") return { text: `✓ done ${acc}`.trim(), title: "submitted from this workspace" };
   if (led.status === "already_in_ena") return { text: `● in ENA ${acc}`.trim(), title: "already present in ENA — skipped on resume" };
   if (led.status === "failed") return { text: "✗ failed", title: "last submission failed" };
   return { text: led.status, title: led.status };
@@ -433,8 +483,8 @@ function renderRunTable() {
     body.appendChild(tr);
   });
   const has = RUN_ROWS.length > 0;
-  $("readsSubmitBtn").disabled = !has;
-  $("readsValidateBtn").disabled = !has;
+  ["readsSubmitBtn", "readsValidateBtn", "readsScriptBtn", "readsScriptValidateBtn"]
+    .forEach((id) => { if ($(id)) $(id).disabled = !has; });
   refreshAssignedCounts();
 }
 // Look up each pairing row's experiment metadata (by EXP_KEY_TITLE = NAME) in
@@ -472,6 +522,18 @@ function appendReadsLog(text) {
   log.scrollTop = log.scrollHeight;
 }
 
+/** The submission prefix every run alias is built from (`<prefix>_<run>`).
+ *  A stable prefix is what lets a re-run recognise runs already in ENA, so a
+ *  blank one is filled in once and kept, rather than going one-off. */
+function readsPrefix() {
+  const el = $("readsPrefix");
+  if (!el.value.trim()) {
+    el.value = "sub-" + Date.now().toString(36);
+    scheduleSave();
+  }
+  return el.value.trim();
+}
+
 // Reads upload is browser-bridged:
 //   1. ask the server for a PLAN (which runs to upload vs. skip + manifest text),
 //   2. for each upload, hand the manifest to the LOCAL HELPER which runs
@@ -481,7 +543,6 @@ function appendReadsLog(text) {
 async function submitReads(doSubmit) {
   $("readsLog").textContent = "";
   $("readsResults").innerHTML = "";
-  const sessionName = SESSION ? SESSION.name : null;
   let runs;
   try {
     runs = mergeExperimentMetadata(RUN_ROWS);
@@ -495,7 +556,7 @@ async function submitReads(doSubmit) {
 
   try {
     const { plan, warnings } = await api("/api/reads/plan", { method: "POST", body: JSON.stringify({
-      runs, test: TEST, session_name: sessionName, ledger: READS_RUNS, force_reupload: $("forceReupload").checked,
+      runs, test: TEST, session_name: readsPrefix(), ledger: READS_RUNS, force_reupload: $("forceReupload").checked,
     }) });
     (warnings || []).forEach((w) => appendReadsLog("WARNING: " + w));
 
@@ -522,11 +583,11 @@ async function submitReads(doSubmit) {
     renderTable("readsResults", results);
     await refreshReadsGrid(results);
     renderRunTable();
-    saveSessionNow();
+    saveWorkspaceNow();
   } catch (e) { banner("submitReadsBanner", false, e.message); }
 }
 
-/** The run accessions this session put in ENA: what the last batch returned,
+/** The run accessions this workspace put in ENA: what the last batch returned,
  *  plus the resume ledger — a resumed batch skips runs it submitted earlier,
  *  and those belong in the confirmation too. */
 function submittedRunAccessions(results = []) {
@@ -535,7 +596,7 @@ function submittedRunAccessions(results = []) {
   return [...new Set([...fromResults, ...fromLedger])].filter(Boolean);
 }
 
-/** The runs as ENA now holds them — read-only, filtered to this session's. */
+/** The runs as ENA now holds them — read-only, filtered to this workspace's. */
 async function refreshReadsGrid(results = []) {
   const keep = submittedRunAccessions(results);
   const grid = $("readsGrid");
@@ -608,4 +669,121 @@ function recordLedger(r) {
     experiment_accession: r.experiment_accession || "",
     run_accession: r.run_accession || "",
   };
+}
+
+// ---------------------------------------------------------------------------
+// Manual mode: a webin-cli command instead of the helper
+// ---------------------------------------------------------------------------
+// Identical up to the plan — the server builds the same manifests either way.
+// Here they become a shell script the user runs themselves, so this page never
+// touches their read files and never needs a helper to be installed.
+
+let READS_SCRIPT_TEXT = "";
+
+/** Quote a value as one single-quoted POSIX shell word. Run aliases can carry
+ *  free text from the experiment grid, so nothing reaches a command line raw. */
+function _shellQuote(value) {
+  return "'" + String(value ?? "").replace(/'/g, "'\\''") + "'";
+}
+
+/** A heredoc delimiter that cannot occur inside the manifests it must wrap. */
+function _heredocDelimiter(texts) {
+  let eof = "MANIFEST_EOF";
+  while (texts.some((t) => t.includes(eof))) eof += "_X";
+  return eof;
+}
+
+function buildReadsScript(entries, doSubmit) {
+  const eof = _heredocDelimiter(entries.map((e) => e.manifest_text || ""));
+  const lines = [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    "",
+    `# Generated by the MIMICC ENA submission assistant for ${entries.length} run(s).`,
+    `# Target: ENA ${TEST ? "TEST — nothing submitted here is permanent." : "PRODUCTION — submissions are permanent."}`,
+    "",
+    "# The folder holding your read files — check this is right:",
+    `READS_DIR=${_shellQuote(readsLocalDir() || "/path/to/your/reads")}`,
+    "# webin-cli: https://github.com/enasequence/webin-cli/releases",
+    'WEBIN_CLI_JAR="${WEBIN_CLI_JAR:-webin-cli.jar}"',
+    "",
+    "# Credentials are NOT written into this script. Set them in your shell first:",
+    "#   export WEBIN_USERNAME='Webin-XXXXX'",
+    "#   read -rs WEBIN_PASSWORD && export WEBIN_PASSWORD",
+    ': "${WEBIN_USERNAME:?set WEBIN_USERNAME first}" "${WEBIN_PASSWORD:?set WEBIN_PASSWORD first}"',
+    "",
+    'MANIFEST_DIR="$(mktemp -d)"',
+    'echo "webin-cli reports will be left in $MANIFEST_DIR"',
+  ];
+  const oneLine = (v) => String(v ?? "").replace(/[\r\n]+/g, " ");
+  entries.forEach((entry) => {
+    lines.push(
+      "",
+      `# --- ${oneLine(entry.name)} -> ${oneLine(entry.alias)}`,
+      `MANIFEST="$MANIFEST_DIR"/${_shellQuote(entry.manifest_filename)}`,
+      `cat > "$MANIFEST" <<'${eof}'`,
+      (entry.manifest_text || "").replace(/\n+$/, ""),
+      eof,
+      'java -jar "$WEBIN_CLI_JAR" -context=reads \\',
+      '  -userName="$WEBIN_USERNAME" -password="$WEBIN_PASSWORD" \\',
+      '  -manifest="$MANIFEST" \\',
+      '  -inputDir="$READS_DIR" -outputDir="$MANIFEST_DIR" \\',
+      `  ${doSubmit ? "-submit" : "-validate"}${TEST ? " -test" : ""}`,
+    );
+  });
+  return lines.join("\n") + "\n";
+}
+
+/** Ask the server for the same plan submitReads() uses, then render it as a
+ *  command instead of running it. Results come back on the NEXT generate: a run
+ *  that reached ENA is recognised by its stable alias and returns as a skip,
+ *  which is what feeds the ledger and the "In ENA" grid. Nothing to relay back,
+ *  so there is no log to paste. */
+async function generateReadsScript(doSubmit) {
+  $("readsLog").textContent = "";
+  $("readsResults").innerHTML = "";
+  let runs;
+  try {
+    runs = mergeExperimentMetadata(RUN_ROWS);
+  } catch (e) { banner("submitReadsBanner", false, e.message); return; }
+
+  try {
+    const { plan, warnings } = await api("/api/reads/plan", { method: "POST", body: JSON.stringify({
+      runs, test: TEST, session_name: readsPrefix(),
+      ledger: READS_RUNS, force_reupload: $("forceReupload").checked,
+    }) });
+    (warnings || []).forEach((w) => appendReadsLog("WARNING: " + w));
+
+    const skipped = plan.filter((e) => e.action === "skip");
+    skipped.forEach((entry) => {
+      appendReadsLog(`=== ${entry.name} === SKIP (${entry.reason})`);
+      recordLedger(entry);
+    });
+    const todo = plan.filter((e) => e.action === "submit");
+
+    READS_SCRIPT_TEXT = todo.length ? buildReadsScript(todo, doSubmit) : "";
+    $("readsScript").textContent = READS_SCRIPT_TEXT;
+    $("readsScriptWrap").style.display = todo.length ? "block" : "none";
+
+    banner("submitReadsBanner", true, todo.length
+      ? `Command ready for ${todo.length} run(s)${skipped.length ? `, ${skipped.length} already done` : ""} — run it in a terminal.`
+      : "Nothing left to run — every run is already in ENA.");
+    if (skipped.length) renderTable("readsResults", skipped);
+    await refreshReadsGrid(skipped);
+    renderRunTable();
+    saveWorkspaceNow();
+  } catch (e) { banner("submitReadsBanner", false, e.message); }
+}
+
+function copyReadsScript() {
+  if (!READS_SCRIPT_TEXT) return;
+  navigator.clipboard.writeText(READS_SCRIPT_TEXT).then(
+    () => banner("submitReadsBanner", true, "Copied — paste it into a terminal."),
+    (e) => banner("submitReadsBanner", false, `Couldn't copy: ${e.message}`),
+  );
+}
+
+function downloadReadsScript() {
+  if (!READS_SCRIPT_TEXT) return;
+  downloadText("submit-reads.sh", READS_SCRIPT_TEXT, "text/x-shellscript");
 }

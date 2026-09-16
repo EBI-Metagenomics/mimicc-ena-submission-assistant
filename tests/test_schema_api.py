@@ -189,10 +189,10 @@ def test_mutable_dataharmonizer_assets_are_not_cached(tmp_path, monkeypatch):
 
 
 def test_app_scripts_are_served_uncached():
-    """A stale cached sessions.js next to a fresh records.js used to blow up
+    """A stale cached workspace.js next to a fresh records.js used to blow up
     with "applySavedGridLayout is not defined" — app static must not be cached."""
-    request = RequestFactory().get("/static/sessions.js")
+    request = RequestFactory().get("/static/workspace.js")
 
-    response = views_core.static_serve_view(request, "sessions.js", str(views_core.STATIC_DIR))
+    response = views_core.static_serve_view(request, "workspace.js", str(views_core.STATIC_DIR))
 
     assert response["Cache-Control"] == "no-store, max-age=0"

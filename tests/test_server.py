@@ -401,6 +401,38 @@ _RUN = {
 }
 
 
+async def test_reads_group_pairs_names_without_credentials(client):
+    # Deliberately no with_creds: grouping strings touches neither ENA nor the
+    # filesystem, so the manual reads mode can list files before logging in.
+    r = await client.post(
+        "/api/reads/group",
+        json={"names": ["runA_R2.fastq.gz", "runA_R1.fastq.gz", "README.md"]},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 1
+    assert body["groups"][0]["group"] == "runA"
+    assert body["groups"][0]["paired"] is True
+
+
+async def test_reads_group_rejects_bad_body(client):
+    r = await client.post("/api/reads/group", json={"names": "not-a-list"})
+    assert r.status_code == 422
+
+
+async def test_reads_group_rejects_too_many_names(client):
+    r = await client.post(
+        "/api/reads/group",
+        json={"names": [f"r{i}.fastq.gz" for i in range(views_records._MAX_READ_NAMES + 1)]},
+    )
+    assert r.status_code == 422
+
+
+async def test_reads_group_rejects_get(client):
+    r = await client.get("/api/reads/group")
+    assert r.status_code == 405
+
+
 async def test_reads_plan_requires_credentials(client):
     r = await client.post("/api/reads/plan", json={"runs": [_RUN]})
     assert r.status_code == 401

@@ -38,6 +38,34 @@ def test_scan_missing_dir(tmp_path):
     assert read_assign.scan_reads(tmp_path / "nope") == []
 
 
+# group_files is the pure core scan_reads delegates to; the manual/CLI reads
+# mode feeds it names from the browser's directory picker instead of a listing.
+
+
+def test_group_files_pairs_and_drops_non_reads():
+    groups = read_assign.group_files(["runA_R2.fastq.gz", "runA_R1.fastq.gz", "README.md", ".DS_Store", "md5sums.txt"])
+    assert len(groups) == 1
+    assert groups[0]["group"] == "runA"
+    assert groups[0]["paired"] is True
+    assert groups[0]["files"] == ["runA_R1.fastq.gz", "runA_R2.fastq.gz"]
+
+
+def test_group_files_mixed_paired_and_single():
+    groups = read_assign.group_files(["b_1.fq.gz", "b_2.fq.gz", "a.bam"])
+    assert [g["group"] for g in groups] == ["a", "b"]  # sorted by stem
+    assert [g["paired"] for g in groups] == [False, True]
+
+
+def test_group_files_half_a_pair_is_not_paired():
+    groups = read_assign.group_files(["lonely_R1.fastq.gz"])
+    assert groups[0]["paired"] is False
+    assert groups[0]["files_by_mate"] == {"1": "lonely_R1.fastq.gz"}
+
+
+def test_group_files_empty():
+    assert read_assign.group_files([]) == []
+
+
 def test_suggest_matches_alias_in_filename():
     groups = [{"group": "MIMICC_A_1_R", "files": ["MIMICC_A_1_R1.fastq.gz"]}]
     samples = [

@@ -55,18 +55,18 @@ async function submitStudies() {
     renderSubmissionLog("studyLog", r);
     renderTable("studyOut", r.accessions || []);
     if (r.success) await refreshStudyGrid();
-    await saveSessionNow();
+    await saveWorkspaceNow();
   } catch (e) {
     const failure = { accessions: [], logs: [...clientLogs, `ERROR: ${e.message}`] };
     window.__lastStudySubmitResponse = failure;
     banner("studyBanner", false, e.message);
     renderSubmissionLog("studyLog", failure);
     renderTable("studyOut", []);
-    await saveSessionNow();
+    await saveWorkspaceNow();
   }
 }
 
-/** The accessions this session actually submitted. A study with no accession
+/** The accessions this workspace actually submitted. A study with no accession
  *  never reached ENA, so it has nothing to confirm. */
 function submittedStudyAccessions() {
   const submitted = (window.__lastStudySubmitResponse?.accessions || []).map((r) => r.accession);
@@ -127,7 +127,7 @@ async function prepareSamples() {
     scheduleSave();
   } catch (e) { banner("prepBanner", false, e.message); $("sampleSubmitBtn").disabled = true; }
 }
-/** The accessions this session actually submitted; a sample with none never
+/** The accessions this workspace actually submitted; a sample with none never
  *  reached ENA. */
 function submittedSampleAccessions() {
   const submitted = (window.__lastSampleSubmitResponse?.accessions || []).map((r) => r.accession);

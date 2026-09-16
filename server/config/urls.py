@@ -21,6 +21,7 @@ urlpatterns = [
     path("api/records/modify", views_records.records_modify),
     path("api/records/<str:entity>/fields", views_records.records_fields),
     path("api/records/<str:entity>", views_records.records_list),
+    path("api/reads/group", views_records.reads_group),
     path("api/reads/suggest", views_records.reads_suggest),
     path("api/reads/plan", views_records.reads_plan),
     path("api/reads/result", views_records.reads_result),

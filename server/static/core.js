@@ -8,13 +8,16 @@ let HEALTH = {};
 let RUN_ROWS = [];          // editable run records for the Reads tab
 let READ_SAMPLES = [];      // ENA samples available for read assignment
 let SELECTED_SAMPLE = "";   // selected sample accession for click assignment
-let SESSION = null;         // active submission session {id, name, test_env}
-let READS_RUNS = {};        // run_name -> reads ledger row (resume status) for the active session
+let READS_RUNS = {};        // run_name -> reads ledger row (resume status) for the workspace
 
 const $ = (id) => document.getElementById(id);
 
 let HELPER_BASE = "";       // base URL of the local reads upload helper, e.g. http://localhost:9100
 let HELPER_OK = false;      // whether the helper is currently reachable
+// Whether the reads upload mode (helper vs. manual) is the user's own choice —
+// set by picking it, or by restoring a workspace that recorded one. Until then
+// we're free to default it to whatever actually works on this machine.
+let READS_MODE_CHOSEN = false;
 
 // Webin (ENA) credentials live in the browser for this tab only (sessionStorage,
 // see credentials.js) and ride along on every API call as headers — the

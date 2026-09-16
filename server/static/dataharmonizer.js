@@ -83,9 +83,8 @@ function setStudyDhSavedIndicator(isoTs) {
 }
 
 async function saveDhExport(exportJson, { silent = false } = {}) {
-  if (!SESSION) { if (!silent) banner("prepBanner", false, "Open a session first."); return; }
   try {
-    const savedAt = await dbSaveDhExport(SESSION.id, "sample", exportJson);
+    const savedAt = await dbSaveDhExport("sample", exportJson);
     if (document.activeElement !== $("dhExport")) $("dhExport").value = JSON.stringify(exportJson);
     setDhSavedIndicator(savedAt);
     scheduleSave();
@@ -103,7 +102,7 @@ function exportDhNow() {
 
 function autosaveDhExport() {
   const dh = dhApi();
-  if (!dh || !SESSION) return; // not loaded / no session — skip this tick silently
+  if (!dh) return; // not loaded — skip this tick silently
   saveDhExport(dh.getExportJson(), { silent: true });
 }
 
@@ -282,9 +281,8 @@ async function checkExpSchemaColumns() {
 }
 
 async function saveExpDhExport(exportJson, { silent = false } = {}) {
-  if (!SESSION) { if (!silent) banner("readsBanner", false, "Open a session first."); return; }
   try {
-    const savedAt = await dbSaveDhExport(SESSION.id, "experiment", exportJson);
+    const savedAt = await dbSaveDhExport("experiment", exportJson);
     setExpDhSavedIndicator(savedAt);
     scheduleSave();
     if (!silent) banner("readsBanner", true, "Saved experiment metadata.");
@@ -301,7 +299,7 @@ function exportExpDhNow() {
 
 function autosaveExpDhExport() {
   const dh = expDhApi();
-  if (!dh || !SESSION) return;
+  if (!dh) return;
   saveExpDhExport(dh.getExportJson(), { silent: true });
 }
 
@@ -332,9 +330,8 @@ $("expDhFrame").addEventListener("load", markDhFrameLoaded);
 $("expDhFrame").addEventListener("load", () => disableIframeFocusWhenInactive($("expDhFrame")));
 
 async function saveStudyDhExport(exportJson, { silent = false } = {}) {
-  if (!SESSION) { if (!silent) banner("studyPrepBanner", false, "Open a session first."); return; }
   try {
-    const savedAt = await dbSaveDhExport(SESSION.id, "study", exportJson);
+    const savedAt = await dbSaveDhExport("study", exportJson);
     setStudyDhSavedIndicator(savedAt);
     scheduleSave();
     if (!silent) banner("studyPrepBanner", true, "Saved study metadata.");
@@ -351,7 +348,7 @@ function exportStudyDhNow() {
 
 function autosaveStudyDhExport() {
   const dh = studyDhApi();
-  if (!dh || !SESSION) return;
+  if (!dh) return;
   saveStudyDhExport(dh.getExportJson(), { silent: true });
 }
 
@@ -378,22 +375,6 @@ $("studyDhFrame").addEventListener("load", startStudyDhAutosave);
 $("studyDhFrame").addEventListener("load", () => stabilizeDataHarmonizerFrameRows("studyDhFrame"));
 $("studyDhFrame").addEventListener("load", markDhFrameLoaded);
 $("studyDhFrame").addEventListener("load", () => disableIframeFocusWhenInactive($("studyDhFrame")));
-
-function reloadExpDhFrame() {
-  const frame = $("expDhFrame");
-  if (!frame) return;
-  if (expDhAutosaveTimer) { clearInterval(expDhAutosaveTimer); expDhAutosaveTimer = null; }
-  if (!frame.src) return; // never pointed at a template (schema not built) — nothing to reload
-  try { frame.contentWindow.location.reload(); } catch { frame.src = frame.src; }
-}
-
-function reloadStudyDhFrame() {
-  const frame = $("studyDhFrame");
-  if (!frame) return;
-  if (studyDhAutosaveTimer) { clearInterval(studyDhAutosaveTimer); studyDhAutosaveTimer = null; }
-  if (!frame.src) return;
-  try { frame.contentWindow.location.reload(); } catch { frame.src = frame.src; }
-}
 
 // Push each pairing row's NAME+SAMPLE into the experiment grid, touching
 // only those two columns (upsertRow) so anything already filled in for that

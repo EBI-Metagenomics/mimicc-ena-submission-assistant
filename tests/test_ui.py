@@ -8,7 +8,6 @@ Playwright (and its browsers) are not installed.
 from __future__ import annotations
 
 import json
-import time
 
 import pytest
 
@@ -16,14 +15,9 @@ playwright_sync = pytest.importorskip("playwright.sync_api")
 from playwright.sync_api import sync_playwright  # noqa: E402
 
 
-def _open_session(pg):
-    """Create + open a session so the tabs unlock (the app gates on a session)."""
-    pg.wait_for_selector("#sessionModal.show")
-    name = f"ui-test-{int(time.time() * 1000)}"
-    pg.fill("#newSessionName", name)
-    pg.click("#sessionModal button:has-text('Create & open')")
-    pg.wait_for_selector("#sessionModal:not(.show)", state="attached")
-    pg.wait_for_function("() => !document.body.classList.contains('no-session')")
+def _wait_for_workspace(pg):
+    """The app restores its one workspace on load, with no prompt."""
+    pg.wait_for_function("() => window.WORKSPACE_READY === true")
 
 
 @pytest.fixture
@@ -36,7 +30,7 @@ def page(live_server_url):
             return
         pg = browser.new_page()
         pg.goto(live_server_url)
-        _open_session(pg)
+        _wait_for_workspace(pg)
         yield pg
         browser.close()
 
@@ -482,9 +476,9 @@ def test_records_manifest_gate(page):
     assert page.is_disabled("#recSubmit"), "a further edit must re-lock submit"
 
 
-def test_records_grid_layout_survives_a_session_round_trip(page):
-    """A session stores the grid's arrangement, never its rows: switching away
-    and back returns the layout and filters, and re-fetches the records."""
+def test_records_grid_layout_survives_a_reload(page):
+    """The workspace stores the grid's arrangement, never its rows: a reload
+    returns the layout and filters, and re-fetches the records."""
     page.evaluate("() => { CREDS = { username: 'Webin-test', password: 'secret' }; }")
     page.click("a.vf-tabs__link:has-text('Records')")
     _fetch_records(page, "samples")
@@ -496,23 +490,50 @@ def test_records_grid_layout_survives_a_session_round_trip(page):
             grid.setFilters([{ column: 'status', operator: 'eq', value: 'PRIVATE' }]);
         }"""
     )
-    first = page.evaluate("() => SESSION.id")
-    page.evaluate("() => saveSessionNow()")
-    page.wait_for_timeout(300)
+    page.evaluate("() => saveWorkspaceNow()")
 
-    # A second session: a blank grid, with none of the first session's state.
-    page.evaluate("() => openSessionModal()")
-    _open_session(page)
-    assert page.evaluate("() => document.getElementById('recGrid').getRows().length") == 0
-    assert page.evaluate("() => document.getElementById('recGrid').getFilters()") == []
-
-    # Back to the first: arrangement restored, rows re-fetched (not restored).
-    page.evaluate("(id) => openSession(id)", first)
+    page.reload()
+    _wait_for_workspace(page)
+    page.evaluate("() => { CREDS = { username: 'Webin-test', password: 'secret' }; loadRecords(); }")
     page.wait_for_function("() => document.getElementById('recGrid').getRows().length > 0")
     layout = page.evaluate("() => document.getElementById('recGrid').getLayout()")
     assert layout["hidden"] == ["alias"]
     assert layout["pinned"] == ["title"]
     assert page.evaluate("() => document.getElementById('recGrid').getFilters()")[0]["column"] == "status"
+
+
+def test_clear_workspace_starts_blank(page):
+    page.click("a.vf-tabs__link:has-text('Reads')")
+    page.fill("#readsPrefix", "batch-1")
+    page.uncheck("#expDhAutoSync")
+    page.evaluate("() => saveWorkspaceNow()")
+
+    page.on("dialog", lambda d: d.accept())
+    with page.expect_navigation():
+        page.click("#workspaceChip button:has-text('Clear')")
+    _wait_for_workspace(page)
+    assert page.input_value("#readsPrefix") == ""
+    assert page.is_checked("#expDhAutoSync")
+
+
+def test_old_session_is_adopted_with_its_name_as_the_reads_prefix(page):
+    """A session saved before sessions were removed becomes the workspace, and
+    its name keeps the run aliases it submitted under — so resume still works."""
+    page.evaluate(
+        """async () => {
+            const db = await idbOpen();
+            const tx = db.transaction(DB_STORE, 'readwrite');
+            tx.objectStore(DB_STORE).delete('workspace');
+            tx.objectStore(DB_STORE).put({ id: 'old1', name: 'older', updated_at: '2026-01-01', state: { test: true, fields: {} } });
+            tx.objectStore(DB_STORE).put({ id: 'old2', name: 'run A', updated_at: '2026-06-01',
+                                           state: { test: true, fields: {} }, reads_runs: { r1: { status: 'done' } } });
+            await new Promise((r) => { tx.oncomplete = r; });
+        }"""
+    )
+    page.reload()
+    _wait_for_workspace(page)
+    assert page.input_value("#readsPrefix") == "run A"
+    assert page.evaluate("() => READS_RUNS.r1.status") == "done"
 
 
 def test_session_state_holds_no_grid_rows(page):
@@ -583,7 +604,7 @@ def test_samples_grid_confirms_only_this_submission(page):
 
 
 def test_reads_grid_confirms_submitted_runs(page):
-    """The reads confirmation grid is limited to this session's runs and shows
+    """The reads confirmation grid is limited to this workspace's runs and shows
     ENA's archiving state, which "submitted" does not imply."""
     page.evaluate("() => { CREDS = { username: 'Webin-test', password: 'secret' }; }")
     page.click("a.vf-tabs__link:has-text('Reads')")
@@ -613,7 +634,7 @@ def test_confirmation_grids_explain_when_nothing_was_submitted(page):
         page.click(f"a.vf-tabs__link:has-text('{tab}')")
         page.locator(f"#vf-tabs__section--{tab.lower()} button:has-text('Refresh from ENA')").click()
         assert page.evaluate(f"() => document.getElementById('{grid}').style.display") == "none"
-        assert "submitted in this session" in page.locator(f"#{empty}").inner_text()
+        assert "submitted from this workspace" in page.locator(f"#{empty}").inner_text()
 
 
 def _inject_fake_experiment_dh(page, rows):
@@ -688,6 +709,177 @@ def test_reads_submit_merges_experiment_metadata(page):
     assert run["LIBRARY_SELECTION"] == "PCR"
     assert run["LIBRARY_STRATEGY"] == "AMPLICON"
     assert run["FASTQ1"] == "runA_R1.fastq.gz" and run["FASTQ2"] == "runA_R2.fastq.gz"
+    # A blank submission prefix is filled in once and kept, so a re-run resumes.
+    prefix = page.input_value("#readsPrefix")
+    assert prefix.startswith("sub-")
+    assert captured["body"]["session_name"] == prefix
+
+
+def test_reads_plan_uses_the_submission_prefix(page):
+    captured = []
+    page.on("request", lambda req: "/api/reads/plan" in req.url and captured.append(req.post_data_json))
+    page.click("a.vf-tabs__link:has-text('Reads')")
+    page.fill("#readsPrefix", "batch-7")
+    _generate_manual_script(page, [_MANUAL_SUBMIT_ENTRY])
+    assert captured[0]["session_name"] == "batch-7"
+
+
+# ---------------------------------------------------------------------------
+# Manual (no-helper) reads mode
+# ---------------------------------------------------------------------------
+
+
+def test_reads_mode_toggle_swaps_helper_and_manual_controls(page):
+    page.click("a.vf-tabs__link:has-text('Reads')")
+
+    page.select_option("#readsMode", "helper")
+    assert page.is_visible("#scanReadsBtn")
+    assert page.is_visible("#readsSubmitBtn")
+    assert not page.is_visible("#readsDirPickLabel")
+    assert not page.is_visible("#readsScriptBtn")
+
+    page.select_option("#readsMode", "manual")
+    assert not page.is_visible("#scanReadsBtn")
+    assert not page.is_visible("#readsSubmitBtn")
+    assert page.is_visible("#readsDirPickLabel")
+    assert page.is_visible("#readsScriptBtn")
+    # The helper's "not running" warning must not nag in a mode that never uses it.
+    assert not page.is_visible("#helperMissing")
+
+
+def test_reads_manual_directory_picker_lists_runs(page, tmp_path):
+    """The picker hands the browser file names only; the pairing is the server's
+    (/api/reads/group), so it matches what the helper's own scan would produce."""
+    for name in ("runA_R1.fastq.gz", "runA_R2.fastq.gz", "README.md"):
+        (tmp_path / name).write_text("x")
+
+    page.click("a.vf-tabs__link:has-text('Reads')")
+    page.select_option("#readsMode", "manual")
+    # A webkitdirectory input takes a directory path, not file payloads.
+    page.set_input_files("#readsDirInput", str(tmp_path))
+    page.wait_for_function("() => RUN_ROWS.length > 0")
+
+    assert page.evaluate("() => RUN_ROWS.map(r => r.NAME)") == ["runA"]
+    assert page.evaluate("() => RUN_ROWS[0].paired") is True
+    assert "README" not in page.inner_text("#runTable")
+
+
+_MANUAL_MANIFEST = "STUDY\tERP1\nNAME\tsess_runA\nDESCRIPTION\t$(whoami) 'quoted'\n"
+_MANUAL_SUBMIT_ENTRY = {
+    "name": "runA",
+    "action": "submit",
+    "alias": "sess_runA",
+    "stable_alias": "sess_runA",
+    "manifest_filename": "sess_runA.manifest",
+    "manifest_text": _MANUAL_MANIFEST,
+    "sample": "ERS111",
+    "study": "ERP1",
+}
+
+
+def _generate_manual_script(page, plan, do_submit=True, test_env=True):
+    """Drive manual mode to a rendered command, with the plan stubbed."""
+    page.click("a.vf-tabs__link:has-text('Reads')")
+    page.select_option("#readsMode", "manual")
+    page.evaluate(
+        """() => {
+            RUN_ROWS = [
+                { NAME: "runA", files: ["runA_R1.fastq.gz", "runA_R2.fastq.gz"], paired: true,
+                  FASTQ1: "runA_R1.fastq.gz", FASTQ2: "runA_R2.fastq.gz", FASTQ: "",
+                  SAMPLE: "ERS111", STUDY: "ERP1", confidence: "manual" }
+            ];
+            renderRunTable();
+            document.getElementById("readsLocalDir").value = "/Users/me/my reads";
+        }"""
+    )
+    _inject_fake_experiment_dh(
+        page,
+        [
+            {
+                "Experiment name": "runA",
+                "Sample alias": "ERS111",
+                "Platform": "ILLUMINA",
+                "Instrument": "Illumina MiSeq",
+                "Library source": "METAGENOMIC",
+                "Library selection": "PCR",
+                "Library strategy": "AMPLICON",
+            }
+        ],
+    )
+    page.route(
+        "**/api/reads/plan",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"plan": plan, "warnings": []}),
+        ),
+    )
+    page.evaluate(f"() => {{ TEST = {json.dumps(test_env)}; }}")
+    page.evaluate(f"() => generateReadsScript({json.dumps(do_submit)})")
+    page.wait_for_timeout(500)
+    return page.text_content("#readsScript")
+
+
+def test_reads_manual_script_carries_manifest_and_flags(page):
+    page.evaluate("() => { CREDS = { username: 'Webin-secret', password: 'hunter2' }; }")
+    script = _generate_manual_script(page, [_MANUAL_SUBMIT_ENTRY], do_submit=True, test_env=True)
+
+    assert page.is_visible("#readsScriptWrap")
+    # The manifest survives the heredoc verbatim — tabs, $(...) and quotes alike.
+    assert _MANUAL_MANIFEST.strip() in script
+    assert "<<'MANIFEST_EOF'" in script
+    # The reads dir is quoted, not interpolated bare (it has a space in it).
+    assert "READS_DIR='/Users/me/my reads'" in script
+    assert "-submit" in script and "-validate" not in script
+    assert "-test" in script
+    # Credentials are referenced, never written in.
+    assert "Webin-secret" not in script and "hunter2" not in script
+    assert '-userName="$WEBIN_USERNAME"' in script
+
+
+def test_reads_manual_script_validate_only_and_production(page):
+    script = _generate_manual_script(page, [_MANUAL_SUBMIT_ENTRY], do_submit=False, test_env=False)
+    assert "-validate" in script and "-submit" not in script
+    # -test against production would silently submit to the wrong service.
+    assert "-test" not in script
+
+
+def test_reads_manual_mode_never_calls_the_helper(page):
+    helper_calls = []
+    page.evaluate("() => { HELPER_OK = false; HELPER_BASE = 'http://127.0.0.1:9/helper'; }")
+    page.route(
+        "http://127.0.0.1:9/**",
+        lambda route: (helper_calls.append(route.request.url), route.abort())[-1],
+    )
+    script = _generate_manual_script(page, [_MANUAL_SUBMIT_ENTRY])
+
+    assert script, "manual mode produced no command"
+    assert helper_calls == []
+
+
+def test_reads_manual_skips_feed_the_ledger(page):
+    """Manual mode's results come back through the plan, not a relayed log: a run
+    already in ENA returns as a skip carrying its accessions."""
+    skip = {
+        "name": "runA",
+        "action": "skip",
+        "reason": "already_in_ena",
+        "skipped": True,
+        "success": True,
+        "alias": "sess_runA",
+        "sample": "ERS111",
+        "study": "ERP1",
+        "exit_code": 0,
+        "experiment_accession": "ERX999",
+        "run_accession": "ERR999",
+    }
+    script = _generate_manual_script(page, [skip])
+
+    assert script == ""  # nothing left to run
+    assert not page.is_visible("#readsScriptWrap")
+    assert page.evaluate("() => READS_RUNS['runA'].status") == "already_in_ena"
+    assert page.evaluate("() => READS_RUNS['runA'].run_accession") == "ERR999"
+    assert "in ENA" in page.inner_text("#runTable")
 
 
 def test_reads_submit_blocks_without_matching_experiment_row(page):
@@ -824,20 +1016,14 @@ def test_experiment_sync_toggle_and_update_button(page):
     page.wait_for_function("() => window.__upserts.length === 2")
 
 
-def test_experiment_auto_sync_toggle_persists_in_the_session(page):
+def test_experiment_auto_sync_toggle_persists_in_the_workspace(page):
     page.click("a.vf-tabs__link:has-text('Reads')")
     page.uncheck("#expDhAutoSync")
-    first = page.evaluate("() => SESSION.id")
-    page.evaluate("() => saveSessionNow()")
-    page.wait_for_timeout(300)
+    page.evaluate("() => saveWorkspaceNow()")
 
-    # A fresh session gets the default (on), not this one's choice.
-    page.evaluate("() => openSessionModal()")
-    _open_session(page)
-    assert page.is_checked("#expDhAutoSync")
-
-    page.evaluate("(id) => openSession(id)", first)
-    page.wait_for_function("() => !document.getElementById('expDhAutoSync').checked")
+    page.reload()
+    _wait_for_workspace(page)
+    assert not page.is_checked("#expDhAutoSync")
 
 
 def test_ena_browser_element_registered(page, live_server_url):
@@ -880,7 +1066,7 @@ def test_theme_toggle_switches_and_persists(page):
     assert page.evaluate("localStorage.getItem('mimicc-theme')") == "dark"
 
     page.reload()
-    _open_session(page)
+    _wait_for_workspace(page)
     assert page.get_attribute("html", "data-theme") == "dark"
     page.click("#themeToggle")
     assert page.get_attribute("html", "data-theme") == "light"

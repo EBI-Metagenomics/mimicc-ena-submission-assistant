@@ -20,6 +20,7 @@ we do not import, to avoid its mgnify-toolkit/JAR dependency).
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
@@ -65,31 +66,29 @@ def _stem_and_mate(name: str, suffix: str) -> tuple[str, str | None]:
     return base, None
 
 
-def scan_reads(reads_dir: Path) -> list[dict[str, Any]]:
-    """Discover read files under ``reads_dir`` and group paired-end mates.
+def group_files(names: Iterable[str]) -> list[dict[str, Any]]:
+    """Group read *filenames* into runs by paired-end mate token.
+
+    Pure: takes basenames, touches no filesystem. Shared by the local-helper
+    scan (which lists the directory itself) and the manual/CLI mode, where the
+    browser's directory picker supplies the names. Non-read files are dropped,
+    so callers may pass a whole directory listing.
 
     Returns a list of read groups, each::
 
         {"group": <stem>, "paired": bool, "files": [<basename>, ...],
          "files_by_mate": {"1": ..., "2": ...} | {}}
-
-    File names are basenames relative to ``reads_dir`` (the webin-cli ``/data``).
     """
     groups: dict[str, dict[str, Any]] = {}
-    if not reads_dir.is_dir():
-        return []
-
-    for path in sorted(reads_dir.iterdir()):
-        if not path.is_file():
-            continue
-        suffix = _read_suffix(path.name)
+    for name in names:
+        suffix = _read_suffix(name)
         if suffix is None:
             continue
-        stem, mate = _stem_and_mate(path.name, suffix)
+        stem, mate = _stem_and_mate(name, suffix)
         group = groups.setdefault(stem, {"group": stem, "files": [], "files_by_mate": {}})
-        group["files"].append(path.name)
+        group["files"].append(name)
         if mate:
-            group["files_by_mate"][mate] = path.name
+            group["files_by_mate"][mate] = name
 
     result = []
     for group in groups.values():
@@ -98,6 +97,16 @@ def scan_reads(reads_dir: Path) -> list[dict[str, Any]]:
         result.append(group)
     result.sort(key=lambda g: g["group"])
     return result
+
+
+def scan_reads(reads_dir: Path) -> list[dict[str, Any]]:
+    """Discover read files under ``reads_dir`` and group paired-end mates.
+
+    File names are basenames relative to ``reads_dir`` (the webin-cli ``/data``).
+    """
+    if not reads_dir.is_dir():
+        return []
+    return group_files(path.name for path in sorted(reads_dir.iterdir()) if path.is_file())
 
 
 # ---------------------------------------------------------------------------

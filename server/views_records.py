@@ -4,6 +4,8 @@ Reads upload goes DIRECT from the user's machine to ENA via the local helper.
 The server never touches local read files. It is fully stateless: Webin
 credentials arrive per-request (see ``webin_creds``) and the resume ledger lives
 in the browser. The reads endpoints only:
+  * group    — pairs up read filenames (names only; the manual, no-helper mode
+               lists the directory in the browser),
   * suggest  — matches scanned read groups to ENA samples,
   * plan     — decides which runs to upload vs. skip (client ledger + ENA
                lookup) and hands the browser the webin-cli manifest text,
@@ -117,6 +119,10 @@ class SuggestRequest(BaseModel):
     groups: list[dict[str, Any]]
     test: bool = True
     max_results: int = 5000
+
+
+class ReadsGroupRequest(BaseModel):
+    names: list[str]
 
 
 class ReadsPlanRequest(BaseModel):
@@ -352,8 +358,33 @@ def records_modify(request: HttpRequest) -> JsonResponse:
 
 
 # ---------------------------------------------------------------------------
-# Reads (browser-bridged): suggest / plan / result
+# Reads (browser-bridged): group / suggest / plan / result
 # ---------------------------------------------------------------------------
+
+# A directory listing from the browser is untrusted and unbounded; grouping is
+# cheap but not free, and the names are echoed back in the response.
+_MAX_READ_NAMES = 20_000
+
+
+def reads_group(request: HttpRequest) -> JsonResponse:
+    """Group read filenames into runs. Names only — no filesystem, no ENA, no
+    credentials: the manual (no-helper) reads mode gets its file list from the
+    browser's directory picker and needs the same pairing logic the helper's own
+    scan applies.
+    """
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+    try:
+        req = _parse(ReadsGroupRequest, request)
+    except (ValidationError, json.JSONDecodeError) as exc:
+        return JsonResponse({"detail": str(exc)}, status=422)
+    if len(req.names) > _MAX_READ_NAMES:
+        return JsonResponse(
+            {"detail": f"Too many files ({len(req.names)}); the limit is {_MAX_READ_NAMES}."},
+            status=422,
+        )
+    groups = read_assign.group_files(req.names)
+    return JsonResponse({"groups": groups, "count": len(groups)})
 
 
 def reads_suggest(request: HttpRequest) -> JsonResponse:

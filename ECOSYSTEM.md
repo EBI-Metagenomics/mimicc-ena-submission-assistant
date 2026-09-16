@@ -26,9 +26,10 @@ End to end, the ecosystem does this:
 The pieces are layered: a thin **vanilla-JS UI** on top of a stateless
 **Python/Django** application, which orchestrates a set of **Python libraries** (ENA
 transport, LinkML utilities, submission builders). Two companions sit beside it: a
-**schema editor** (dhtb) run as a Docker Compose service, and a **native desktop
-reads uploader** (read-helper-app) that the browser drives directly. A **bundle
-builder** (dh-builder) runs at image build time.
+**schema editor** (dhtb) run as a Docker Compose service, and an *optional* **native
+desktop reads uploader** (read-helper-app) that the browser drives directly —
+optional because the Reads tab can instead hand the user a `webin-cli` command to
+run themselves. A **bundle builder** (dh-builder) runs at image build time.
 
 ```
                 ┌───────────────────────────────────────────────┐
@@ -122,9 +123,9 @@ persistent state lives in the browser.
   webin-cli manifests; `webin_creds.py` turns per-request `X-Webin-Username` /
   `X-Webin-Password` headers into credentials (nothing is stored server-side).
 - **Frontend** (`server/static/`): `index.html` shell plus per-concern scripts
-  (`core.js` API clients, `credentials.js`, `sessions.js`, `records.js`,
+  (`core.js` API clients, `credentials.js`, `workspace.js`, `records.js`,
   `samples.js`, `reads.js`, `schema.js`, `dataharmonizer.js`, `theme.js`,
-  `boot.js`). Submission sessions and the reads resume ledger are kept in
+  `boot.js`). The workspace (all entered state) and the reads resume ledger are kept in
   **IndexedDB**; Webin credentials in **sessionStorage** for the tab only. The
   DataHarmonizer bundle is built in Docker and volume-mounted at
   `server/static/dh/`; `ena-browser` is vendored under `server/static/vendor/`.
@@ -199,6 +200,9 @@ these directly.
 
 A native **Electron** desktop app (**TypeScript/Node**) that runs `webin-cli` read
 uploads from the user's machine — large read files never reach the assistant server.
+It is one of two routes: the assistant's Reads tab also has a **manual mode** that
+needs no helper at all, listing the reads folder with a plain browser directory
+input and rendering the same plan as a `webin-cli` script the user runs themselves.
 The main process starts a small Node HTTP server bound to **127.0.0.1:9100**; the
 assistant's *browser* UI detects it on localhost and drives it with cross-origin
 requests (the assistant server never talks to it).
@@ -274,7 +278,7 @@ interesting difference is the **frontend**.
 - **Python/Django** for everything server-side: HTTP views and routing, static
   serving, and orchestration of `ena-api-client`, `ena-submission-toolkit` and
   `linkml-lib`. Chosen because the submission stack is already Python. The server is
-  kept stateless — sessions and credentials live in the browser — so it needs no
+  kept stateless — the workspace and credentials live in the browser — so it needs no
   database or cache service.
 - **Vanilla JavaScript with no build step.** The app does not ship React or a
   bundler. The heavy interactive UI — the metadata spreadsheet and record grids — is
@@ -287,8 +291,10 @@ interesting difference is the **frontend**.
   the browser-held session and sent to the server for prepare/submit.
 - **Schema editing delegated to the dhtb sidecar** over `postMessage`, rather than
   reimplementing a schema editor in the assistant.
-- **Reads upload pushed to a local read-helper-app** so large files go straight from
-  the user's machine to ENA — a deliberate data-path boundary.
+- **Reads upload pushed off the server entirely** so large files go straight from
+  the user's machine to ENA — a deliberate data-path boundary. The local
+  read-helper-app automates it; manual mode keeps the same boundary with no extra
+  software, by generating the `webin-cli` command instead of running it.
 
 ### dataharmonizer-template-builder — Python backend, *React/TypeScript/Vite* frontend
 
@@ -325,7 +331,7 @@ and edits* schemas interactively (React + TS pays for itself).
 | **lxml** (≥5) | toolkit, linkml-lib | SRA XML building and XSD validation |
 | **Typer** | toolkit | CLI framework for `ena-submission-toolkit` |
 | **PyYAML** (≥6) | linkml-lib | LinkML YAML parsing/dumping |
-| **Browser storage** (IndexedDB, sessionStorage) | assistant frontend | Submission sessions and reads resume ledger (IndexedDB); Webin credentials for the tab only (sessionStorage) |
+| **Browser storage** (IndexedDB, sessionStorage) | assistant frontend | Workspace and reads resume ledger (IndexedDB); Webin credentials for the tab only (sessionStorage) |
 | **Docker / docker-compose** | assistant, dhtb, dh-builder | Packaging and running the assistant and dhtb containers; building the DH bundle |
 | **webin-cli** (`webin-cli.jar` GitHub release) | read-helper-app | ENA's official read-upload tool, run with local Java on the user's machine |
 | **Node 20 / Yarn** | dh-builder | Build toolchain for the DataHarmonizer bundle |
@@ -382,7 +388,7 @@ separate tier from the browser and from read-helper-app.
 
 | Project | Server (Docker containers) | Browser | read-helper-app (native, user's machine) |
 |---|---|---|---|
-| **mimicc-ena-submission-assistant** | Django views: prepare/submit, records list/modify/actions, reads suggest/plan/result, schema library, static + `/dh` serving | SPA; sessions in IndexedDB; credentials in sessionStorage, sent as headers per request; orchestrates reads upload between server and helper | — |
+| **mimicc-ena-submission-assistant** | Django views: prepare/submit, records list/modify/actions, reads group/suggest/plan/result, schema library, static + `/dh` serving | SPA; workspace in IndexedDB; credentials in sessionStorage, sent as headers per request; orchestrates reads upload between server and helper, or renders it as a `webin-cli` script | — |
 | **ena-api-client** | All Webin Submission/Reports API calls | — | — |
 | **ena-submission-toolkit** | XML builders, XSD validation, records, DH-export prep | — | — |
 | **linkml-lib** | Schema compile/IO in the assistant and in dhtb | — | — |
@@ -393,9 +399,11 @@ separate tier from the browser and from read-helper-app.
 | **read-helper-app** | — | Status page; driven by the SPA via `fetch`/`EventSource` | Read scanning, in-memory credentials, `webin-cli.jar` via Java, upload of read files to ENA |
 
 **Data paths:** Webin credentials are held in the browser tab and copied per request
-to the server (not stored) and to read-helper-app (in memory). Metadata/XML goes
-browser → server → ENA. Read files go read-helper-app → ENA; the server only sees
-read-group paths and upload outcomes.
+to the server (not stored) and to read-helper-app (in memory); in manual mode they
+reach webin-cli only through the user's own shell environment, and are never written
+into the generated script. Metadata/XML goes browser → server → ENA. Read files go
+read-helper-app → ENA (or user's terminal → ENA); the server only sees read *file
+names* and upload outcomes.
 
 ---
 

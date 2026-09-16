@@ -74,5 +74,11 @@ async function detectHelper() {
   const miss = $("helperMissing");
   if (miss) miss.style.display = HELPER_OK ? "none" : "block";
   if ($("scanReadsBtn")) $("scanReadsBtn").disabled = !HELPER_OK;
+  // No helper on this machine? Land in the mode that works rather than on a
+  // warning banner — but never override a mode the user picked or restored.
+  if (!HELPER_OK && !READS_MODE_CHOSEN && $("readsMode")) {
+    $("readsMode").value = "manual";
+    applyReadsMode();
+  }
   return HELPER_OK;
 }

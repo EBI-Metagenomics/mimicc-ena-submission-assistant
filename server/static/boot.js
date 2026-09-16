@@ -18,12 +18,10 @@ async function startApp() {
   initTheme();               // stamp <html data-theme> before anything paints
   restoreCreds();            // pull Webin creds saved for this browser tab (if any)
   await refreshHealth();
-  captureInitialDefaults();  // pristine blank-slate snapshot, used to reset between sessions
   initDhFrames();            // point both DH iframes at explicit ?template= paths
   refreshSchemaList();       // schema library + the Samples/Reads grid selectors
   refreshEnaSources();       // bundled ENA checklist/XSD options for "Build a new schema"
   initSchemaEditorFrame();   // point the Schema tab's editor iframe at the dhtb sidecar
-  setSessionChip();          // no session yet -> body.no-session (blurs/locks tabs)
-  openSessionModal();        // force a session pick on load
+  await restoreWorkspace();  // the one implicit workspace, no prompt
 }
 init();
