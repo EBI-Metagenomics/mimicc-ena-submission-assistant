@@ -20,10 +20,63 @@ def _wait_for_workspace(pg):
     pg.wait_for_function("() => window.WORKSPACE_READY === true")
 
 
+# What the account "holds", per entity — the default answer to list_records.
+_RECORDS = {
+    "studies": [
+        {"alias": "studyA", "accession": "ERP111", "title": "Study A", "status": "PRIVATE"},
+        {"alias": "studyB", "accession": "ERP222", "title": "Study B", "status": "PRIVATE"},
+    ],
+    "samples": [
+        {"alias": "MIMICC_A_1", "accession": "ERS111", "title": "Sample A1", "status": "PRIVATE"},
+        {"alias": "MIMICC_B_2", "accession": "ERS222", "title": "Sample B2", "status": "PRIVATE"},
+    ],
+    "runs": [
+        {
+            "alias": "runA",
+            "accession": "ERR111",
+            "experiment_accession": "ERX111",
+            "study_accession": "ERP111",
+            "sample_accession": "ERS111",
+            "status": "PRIVATE",
+            # ENA's run-processing report: whether the read files are
+            # archived, which registering a run does not say.
+            "process_status": "COMPLETED",
+            "process_date": "2026-01-02",
+        },
+        {
+            "alias": "runB",
+            "accession": "ERR222",
+            "experiment_accession": "ERX222",
+            "study_accession": "ERP111",
+            "sample_accession": "ERS222",
+            "status": "PRIVATE",
+            "process_status": "IN_QUEUE",
+            "process_date": "2026-01-02",
+        },
+    ],
+    "experiments": [
+        {
+            "alias": "expA",
+            "accession": "ERX111",
+            "title": "Experiment A",
+            "study_accession": "ERP111",
+            "sample_accession": "ERS111",
+            "status": "PRIVATE",
+        },
+    ],
+}
+
+_DEFAULT_PY = {
+    "ena_service.list_records": {"__by_entity": _RECORDS},
+    "ena_service.read_editable_fields": {},
+}
+
+
 def _stub_py(page, responses):
     """Replace py() — the page's call into Python — with canned answers keyed by
-    target, recording each call in ``window.__pyCalls``. A response of
-    ``{"__error": msg}`` rejects. The real worker is covered by the Pyodide
+    target (on top of ``_DEFAULT_PY``), recording each call in
+    ``window.__pyCalls``. ``{"__error": msg}`` rejects; ``{"__by_entity": {...}}``
+    answers by the call's ``entity``. The real worker is covered by the Pyodide
     tests at the end of this file."""
     page.evaluate(
         """(responses) => {
@@ -33,11 +86,16 @@ def _stub_py(page, responses):
                 if (!(target in responses)) throw new Error('unstubbed py(): ' + target);
                 const answer = responses[target];
                 if (answer && answer.__error) throw new Error(answer.__error);
+                if (answer && answer.__by_entity) return answer.__by_entity[kwargs.entity] || [];
                 return answer;
             };
         }""",
-        responses,
+        {**_DEFAULT_PY, **responses},
     )
+
+
+def _use_real_python(page):
+    page.evaluate("() => { py = window.__realPy; }")
 
 
 def _py_calls(page, target):
@@ -55,6 +113,8 @@ def page(live_server_url):
         pg = browser.new_page()
         pg.goto(live_server_url)
         _wait_for_workspace(pg)
+        pg.evaluate("() => { window.__realPy = py; }")
+        _stub_py(pg, {})
         yield pg
         browser.close()
 
@@ -107,16 +167,16 @@ def test_study_submit_displays_submission_logs(page):
             window.__preparedStudies = [{ alias: "study-a", TITLE: "Study A" }];
         }"""
     )
-    page.route(
-        "**/api/study/submit",
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=(
-                '{"success":false,"accessions":[],"error":"receipt rejected",'
-                '"logs":["INFO: XSD validation passed","ERROR: Receipt: invalid study"]}'
-            ),
-        ),
+    _stub_py(
+        page,
+        {
+            "ena_service.submit_studies": {
+                "success": False,
+                "accessions": [],
+                "error": "receipt rejected",
+                "logs": ["INFO: XSD validation passed", "ERROR: Receipt: invalid study"],
+            }
+        },
     )
 
     page.click("button:has-text('Submit prepared studies')")
@@ -126,6 +186,10 @@ def test_study_submit_displays_submission_logs(page):
     assert "ERROR: Receipt: invalid study" in page.inner_text("#studyLog")
     assert "No records." in page.inner_text("#studyOut")
     assert page.evaluate("() => window.__lastStudySubmitResponse?.error") == "receipt rejected"
+    (call,) = _py_calls(page, "ena_service.submit_studies")
+    assert call["kwargs"]["creds"] == {"username": "Webin-test", "password": "secret"}
+    assert call["kwargs"]["test"] is True
+    assert set(call["files"]) == {"/assets/ena_schema/ENA.project.xsd", "/assets/ena_schema/SRA.common.xsd"}
 
 
 def test_study_submit_without_prepared_records_logs_error(page):
@@ -144,14 +208,7 @@ def test_study_submit_displays_log_area_when_response_has_no_logs(page):
             window.__preparedStudies = [{ alias: "study-a", TITLE: "Study A" }];
         }"""
     )
-    page.route(
-        "**/api/study/submit",
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body='{"success":false,"accessions":[],"error":"receipt rejected"}',
-        ),
-    )
+    _stub_py(page, {"ena_service.submit_studies": {"success": False, "accessions": [], "error": "receipt rejected"}})
 
     page.click("button:has-text('Submit prepared studies')")
     page.wait_for_function("() => document.querySelector('#studyLog')?.innerText.includes('receipt rejected')")
@@ -396,20 +453,27 @@ def test_records_runs_and_experiments_views(page):
 
 
 def test_records_criteria_reach_the_request(page):
-    """The fetch criteria are request criteria — they go on the query string."""
+    """The fetch criteria are request criteria — they go to list_records."""
     page.evaluate("() => { CREDS = { username: 'Webin-test', password: 'secret' }; }")
     page.click("a.vf-tabs__link:has-text('Records')")
 
-    seen = []
-    page.on("request", lambda r: seen.append(r.url) if "/api/records/samples?" in r.url else None)
     page.fill("#recSearch", "MIMICC")
     page.fill("#recLinked", "PRJEB1234")
     page.check("#recUnlinked")
+    page.check("#recFullFields")
     _fetch_records(page, "samples")
 
-    assert "search=MIMICC" in seen[-1]
-    assert "linked_to=PRJEB1234" in seen[-1]
-    assert "unlinked=true" in seen[-1]
+    kwargs = _py_calls(page, "ena_service.list_records")[-1]["kwargs"]
+    assert (kwargs["entity"], kwargs["search"], kwargs["linked_to"]) == ("samples", "MIMICC", "PRJEB1234")
+    assert kwargs["unlinked"] is True and kwargs["full_fields"] is True
+
+
+def test_records_fetch_needs_credentials(page):
+    page.evaluate("() => { CREDS = { username: '', password: '' }; }")
+    page.click("a.vf-tabs__link:has-text('Records')")
+    page.click("button:has-text('Fetch')")
+    page.wait_for_function("() => document.getElementById('recLog').textContent.includes('Credentials not set')")
+    assert _py_calls(page, "ena_service.list_records") == []
 
 
 def _enable_write(page):
@@ -419,15 +483,9 @@ def _enable_write(page):
 
 
 def test_records_row_action_posts_accession(page):
-    """A row-action button the element renders reaches /api/records/action."""
+    """A row-action button the element renders reaches ena_service.run_action."""
     page.evaluate("() => { CREDS = { username: 'Webin-test', password: 'secret' }; }")
-    posted = []
-
-    def handle(route):
-        posted.append(route.request.post_data_json)
-        route.fulfill(status=200, content_type="application/json", body='{"success": true, "messages": "released"}')
-
-    page.route("**/api/records/action", handle)
+    _stub_py(page, {"ena_service.run_action": {"success": True, "messages": "released"}})
     page.click("a.vf-tabs__link:has-text('Records')")
     _enable_write(page)  # row actions only exist in write mode
     _fetch_records(page, "samples")
@@ -439,9 +497,10 @@ def test_records_row_action_posts_accession(page):
     page.locator("ena-browser#recGrid .ht_clone_inline_start button:has-text('Release')").first.click()
     page.wait_for_timeout(300)
 
-    assert posted, "no lifecycle action was posted"
-    assert posted[0]["action"] == "release"
-    assert posted[0]["accession"] == "ERS111"
+    posted = _py_calls(page, "ena_service.run_action")
+    assert posted, "no lifecycle action was run"
+    assert posted[0]["kwargs"]["action"] == "release"
+    assert posted[0]["kwargs"]["accession"] == "ERS111"
 
 
 def _edit_title(page, current, text):
@@ -458,10 +517,6 @@ def _edit_title(page, current, text):
 
 def test_records_edit_lands_in_the_change_set(page):
     page.evaluate("() => { CREDS = { username: 'Webin-test', password: 'secret' }; }")
-    page.route(
-        "**/api/records/samples/fields",
-        lambda route: route.fulfill(status=200, content_type="application/json", body='{"fields": {}}'),
-    )
     page.click("a.vf-tabs__link:has-text('Records')")
     _enable_write(page)
     _fetch_records(page, "samples")
@@ -476,18 +531,22 @@ def test_records_manifest_gate(page):
     """Submit stays locked until the manifests for the current edits have been
     built, and re-locks as soon as anything is edited again."""
     page.evaluate("() => { CREDS = { username: 'Webin-test', password: 'secret' }; }")
-    page.route(
-        "**/api/records/samples/fields",
-        lambda route: route.fulfill(status=200, content_type="application/json", body='{"fields": {}}'),
-    )
-    page.route(
-        "**/api/records/modify/preview",
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body='{"success": true, "results": [{"accession": "ERS111", "success": true, '
-            '"xml": "<SAMPLE_SET/>", "changes": {"title": "Edited A1"}, "messages": []}]}',
-        ),
+    _stub_py(
+        page,
+        {
+            "ena_service.preview_modify_records": {
+                "success": True,
+                "results": [
+                    {
+                        "accession": "ERS111",
+                        "success": True,
+                        "xml": "<SAMPLE_SET/>",
+                        "changes": {"title": "Edited A1"},
+                        "messages": [],
+                    }
+                ],
+            }
+        },
     )
     page.click("a.vf-tabs__link:has-text('Records')")
     _enable_write(page)
@@ -523,6 +582,7 @@ def test_records_grid_layout_survives_a_reload(page):
 
     page.reload()
     _wait_for_workspace(page)
+    _stub_py(page, {})
     page.evaluate("() => { CREDS = { username: 'Webin-test', password: 'secret' }; loadRecords(); }")
     page.wait_for_function("() => document.getElementById('recGrid').getRows().length > 0")
     layout = page.evaluate("() => document.getElementById('recGrid').getLayout()")
@@ -583,14 +643,15 @@ def test_studies_grid_confirms_only_this_submission(page):
     """After a submit, the grid shows what ENA holds — filtered to the
     accessions this submission produced, and read-only."""
     page.evaluate("() => { CREDS = { username: 'Webin-test', password: 'secret' }; }")
-    page.route(
-        "**/api/study/submit",
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body='{"success": true, "logs": ["INFO: done"], '
-            '"accessions": [{"alias": "studyA", "accession": "ERP111"}]}',
-        ),
+    _stub_py(
+        page,
+        {
+            "ena_service.submit_studies": {
+                "success": True,
+                "logs": ["INFO: done"],
+                "accessions": [{"alias": "studyA", "accession": "ERP111"}],
+            }
+        },
     )
     page.click("a.vf-tabs__link:has-text('Studies')")
     page.evaluate("() => { window.__preparedStudies = [{ alias: 'studyA' }]; }")
@@ -607,14 +668,15 @@ def test_studies_grid_confirms_only_this_submission(page):
 def test_samples_grid_confirms_only_this_submission(page):
     """The Phase-5 study check, for samples — the three grids are parallel."""
     page.evaluate("() => { CREDS = { username: 'Webin-test', password: 'secret' }; }")
-    page.route(
-        "**/api/sample/submit",
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body='{"success": true, "logs": ["INFO: done"], '
-            '"accessions": [{"alias": "MIMICC_A_1", "accession": "ERS111"}]}',
-        ),
+    _stub_py(
+        page,
+        {
+            "ena_service.submit_samples": {
+                "success": True,
+                "logs": ["INFO: done"],
+                "accessions": [{"alias": "MIMICC_A_1", "accession": "ERS111"}],
+            }
+        },
     )
     page.click("a.vf-tabs__link:has-text('Samples')")
     page.evaluate(
@@ -630,6 +692,12 @@ def test_samples_grid_confirms_only_this_submission(page):
     visible = page.evaluate("() => document.getElementById('sampleGrid').getVisibleRows()")
     assert [row["accession"] for row in visible] == ["ERS111"]
     assert page.get_attribute("#sampleGrid", "mode") == "read"
+    (call,) = _py_calls(page, "ena_service.submit_samples")
+    assert set(call["files"]) == {
+        "/assets/ena_schema/SRA.sample.xsd",
+        "/assets/ena_schema/SRA.common.xsd",
+        "/schemas/mimicc_sample.yaml",
+    }
 
 
 def test_reads_grid_confirms_submitted_runs(page):
@@ -1153,6 +1221,7 @@ def py_bundle():
 def test_python_stack_runs_in_a_browser_worker(page, py_bundle):
     """The real submission stack loads in Pyodide and reaches ENA through the
     sync-XHR httpx transport, with Basic auth, from the worker."""
+    _use_real_python(page)
     seen = {}
 
     def reports(route):
@@ -1181,6 +1250,7 @@ def test_python_prepares_and_plans_in_a_browser_worker(page, py_bundle):
     """Phase 3's calls against the real worker: the schema a call needs is
     fetched into Python's filesystem, linkml filters and renames in the
     browser, and a reads plan is built after an ENA lookup."""
+    _use_real_python(page)
     page.route(
         "**/ena/submit/report/**",
         lambda route: route.fulfill(
@@ -1228,6 +1298,7 @@ def test_python_prepares_and_plans_in_a_browser_worker(page, py_bundle):
 
 def test_py_rejects_when_the_worker_cannot_start(page):
     """A worker that dies on load never answers; py() must fail, not hang."""
+    _use_real_python(page)
     page.route(
         "**/static/py/worker.js",
         lambda route: route.fulfill(status=200, content_type="text/javascript", body="throw new Error('boom');"),
@@ -1236,3 +1307,57 @@ def test_py_rejects_when_the_worker_cannot_start(page):
         "() => py('read_assign.group_files', { names: [] }).then(() => 'resolved', (e) => e.message)"
     )
     assert message.startswith("Python runtime failed to start")
+
+
+def test_python_submits_samples_from_a_browser_worker(page, py_bundle):
+    """Phase 4 against the real worker: prepare, XSD-validate in the browser with
+    the served XSDs, and POST the sample XML to Webin with Basic auth."""
+    _use_real_python(page)
+    hits = []
+
+    def ena(route):
+        request = route.request
+        hits.append((request.method, request.url.split("?")[0]))
+        cors = {"access-control-allow-origin": "*"}
+        if "/webin-v2/submit" in request.url:
+            assert request.headers["authorization"].startswith("Basic ")
+            assert b"<SAMPLE_SET" in (request.post_data_buffer or b"")
+            receipt = (
+                '<?xml version="1.0"?><RECEIPT success="true">'
+                '<SAMPLE alias="MIMICC_A_2" accession="ERS999" status="PRIVATE"/>'
+                '<SUBMISSION alias="s" accession="ERA1"/></RECEIPT>'
+            )
+            route.fulfill(status=200, content_type="application/xml", headers=cors, body=receipt)
+        else:
+            route.fulfill(status=200, content_type="application/json", headers=cors, body="[]")
+
+    page.route("**://*.ebi.ac.uk/**", ena)
+    export = {
+        "Container": {
+            "MIMICC_SampleExperiments": [
+                {
+                    "Sample alias (ENA sample alias)": "MIMICC_A_2",
+                    "Sample title": "MIMICC_A_2",
+                    "Sample storage temperature": "-80",
+                    "Collection date": "2026-05-10",
+                    "Taxon ID": "1235509",
+                    "Scientific name": "synthetic metagenome",
+                }
+            ]
+        }
+    }
+    page.evaluate("() => { CREDS = { username: 'Webin-1', password: 'pw' }; }")
+    result = page.evaluate(
+        """async (exportJson) => {
+            const prepared = await py('ena_service.prepare_sample_records',
+                { dh_export: exportJson, where: HEALTH.default_sample_filter }, servedFiles('/schemas/mimicc_sample.yaml'));
+            return enaPy('ena_service.submit_samples', { records: prepared.records, checklist: 'ERC000025' },
+                servedFiles('/assets/ena_schema/SRA.sample.xsd', '/assets/ena_schema/SRA.common.xsd',
+                            '/schemas/mimicc_sample.yaml'));
+        }""",
+        export,
+    )
+
+    assert result["success"], result.get("logs")
+    assert [a["accession"] for a in result["accessions"]] == ["ERS999"]
+    assert any("webin-v2/submit" in url for _, url in hits), hits

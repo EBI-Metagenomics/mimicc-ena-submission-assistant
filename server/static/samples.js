@@ -39,15 +39,15 @@ async function submitStudies() {
     }
     clientLogs = [
       `INFO: Browser started study submission for ${records.length} prepared record(s).`,
-      "INFO: Sending prepared studies to the local server for ENA pre-validation and submission.",
+      "INFO: Validating prepared studies in the browser and submitting them to ENA.",
     ];
     banner("studyBanner", true, "Submitting prepared studies...");
     renderSubmissionLog("studyLog", { logs: clientLogs });
     window.__lastStudySubmitResponse = { accessions: [], logs: clientLogs };
-    const r = await api("/api/study/submit", { method: "POST", body: JSON.stringify({
-      records, test: TEST, modify: $("studyModify").checked,
+    const r = await enaPy("ena_service.submit_studies", {
+      records, modify: $("studyModify").checked,
       hold_until: $("studyHold").value || null, public: $("studyPublic").checked,
-    }) });
+    }, servedFiles("/assets/ena_schema/ENA.project.xsd", "/assets/ena_schema/SRA.common.xsd"));
     window.__lastStudySubmitResponse = r;
     banner(
       "studyBanner",
@@ -85,7 +85,7 @@ async function refreshStudyGrid() {
   grid.style.display = keep.length ? "block" : "none";
   if (!keep.length) { grid.setRows([]); return; }
   try {
-    const rows = await api(`/api/records/studies?test=${TEST}&status=all`);
+    const rows = await enaPy("ena_service.list_records", { entity: "studies" });
     grid.applyConfig({ entity: "studies", mode: "read", selectionMode: "none", rowActions: [] });
     applySavedGridLayout("studyOut", "studies");
     grid.setRows(rows);
@@ -123,7 +123,7 @@ async function prepareSamples() {
   try {
     // _bootstrap.schema_path() resolves to /schemas/mimicc_sample.yaml in the worker.
     const r = await py("ena_service.prepare_sample_records", { dh_export: exportJson, where: $("sampleFilter").value || null },
-      { "/schemas/mimicc_sample.yaml": "/schemas/mimicc_sample.yaml" });
+      servedFiles("/schemas/mimicc_sample.yaml"));
     window.__prepared = r.records;
     banner("prepBanner", true, `Prepared ${r.count} sample record(s). Ready to submit.`);
     renderTable("prepOut", r.records);
@@ -147,7 +147,7 @@ async function refreshSampleGrid() {
   grid.style.display = keep.length ? "block" : "none";
   if (!keep.length) { grid.setRows([]); return; }
   try {
-    const rows = await api(`/api/records/samples?test=${TEST}&status=all`);
+    const rows = await enaPy("ena_service.list_records", { entity: "samples" });
     grid.applyConfig({ entity: "samples", mode: "read", selectionMode: "none", rowActions: [] });
     applySavedGridLayout("sampleOut", "samples");
     grid.setRows(rows);
@@ -159,10 +159,10 @@ async function refreshSampleGrid() {
 
 async function submitSamples() {
   try {
-    const r = await api("/api/sample/submit", { method: "POST", body: JSON.stringify({
-      records: window.__prepared || [], test: TEST, modify: $("sampleModify").checked,
+    const r = await enaPy("ena_service.submit_samples", {
+      records: window.__prepared || [], modify: $("sampleModify").checked,
       checklist: $("sampleChecklist").value || null, hold_until: $("sampleHold").value || null, public: $("samplePublic").checked,
-    }) });
+    }, servedFiles("/assets/ena_schema/SRA.sample.xsd", "/assets/ena_schema/SRA.common.xsd", "/schemas/mimicc_sample.yaml"));
     window.__lastSampleSubmitResponse = r;
     banner("sampleBanner", r.success, r.success ? `Submitted ${(r.accessions || []).length} sample(s).` : (r.error || "Submission failed."));
     renderSubmissionResult("sampleOut", r);

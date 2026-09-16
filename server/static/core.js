@@ -20,18 +20,13 @@ let HELPER_OK = false;      // whether the helper is currently reachable
 let READS_MODE_CHOSEN = false;
 
 // Webin (ENA) credentials live in the browser for this tab only (sessionStorage,
-// see credentials.js) and ride along on every API call as headers — the
-// stateless local backend reads them per-request (server/webin_creds.py).
+// see credentials.js). They go to ENA from the Python worker (enaPy) and never
+// to this app's own server.
 let CREDS = { username: "", password: "" };
-function webinHeaders() {
-  return CREDS.username && CREDS.password
-    ? { "X-Webin-Username": CREDS.username, "X-Webin-Password": CREDS.password }
-    : {};
-}
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...webinHeaders() },
+    headers: { "Content-Type": "application/json" },
     ...opts,
   });
   const text = await res.text();
@@ -77,6 +72,19 @@ function py(target, kwargs = {}, files = {}) {
     _pyPending.set(id, { resolve, reject });
     pyWorker().postMessage({ id, target, kwargs, files });
   });
+}
+
+/** py() for a call that acts on ENA as the user: adds the Webin credentials
+ *  and the test/production switch, and fails fast without credentials. */
+async function enaPy(target, kwargs = {}, files = {}) {
+  if (!credsConfigured()) throw new Error("Credentials not set. Enter your Webin username and password.");
+  return py(target, { creds: CREDS, test: TEST, ...kwargs }, files);
+}
+
+/** A `files` map for py() of app-served paths fetched to the same path in the
+ *  worker — which is where _bootstrap looks for schemas/ and assets/ena_schema/. */
+function servedFiles(...paths) {
+  return Object.fromEntries(paths.map((path) => [path, path]));
 }
 
 // Call the local reads upload helper (cross-origin to 127.0.0.1:<helper_port>).

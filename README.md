@@ -372,16 +372,16 @@ build step, exactly like the embedded DataHarmonizer bundle.
 
 **Editing is gated.** An ENA MODIFY *replaces* the whole record, so **Submit changes**
 stays locked until *Generate manifests* has built and shown the exact XML for the
-current edits (`POST /api/records/modify/preview`), and any further edit re-locks it.
+current edits (`ena_service.preview_modify_records`), and any further edit re-locks it.
 The editable fields per entity come from `/api/health` (`editable_columns`) — the
-server builds the XML, so it is the authority — plus this listing's checklist
+toolkit builds the XML, so it is the authority — plus this listing's checklist
 attributes, which arrive as `attr:`-prefixed columns when **all fields** is ticked and
 are addressed by tag in the MODIFY.
 
 **The division of responsibility.** The element is a *view*: it renders, filters,
 sorts, selects and tracks edits. It does not fetch, does not hold credentials, does
 not know about test vs production, does not persist anything, and never submits.
-This app keeps all of that — the `/api/records/*` fetches, the Webin credentials, the
+This app keeps all of that — the `ena_service.list_records` fetches, the Webin credentials, the
 debug log, the release/hold/suppress/cancel handlers (the element only *emits*
 `ena-browser:row-action`), the IndexedDB session state that stores the grid layout and
 filters, and the pairing logic that joins a selected sample to a read group.
@@ -402,7 +402,7 @@ a column the grid first meets in the data arrives hidden, and that sticks.
 ```js
 const grid = document.getElementById("recGrid");
 grid.applyConfig({ entity: "samples", mode: "edit", editableColumns: ["alias", "title"] });
-grid.setRows(await api(`/api/records/samples?test=${TEST}`));
+grid.setRows(await enaPy("ena_service.list_records", { entity: "samples" }));
 
 grid.addEventListener("ena-browser:change", () => refreshSubmitButton());
 grid.addEventListener("ena-browser:row-action", (e) =>
@@ -567,7 +567,6 @@ server/
   views_auth.py         login/logout/me, admin user management
   views_credentials.py  Webin credentials set/clear (POST/DELETE /api/credentials)
   views_sessions.py     submission session CRUD + state + DH export
-  views_records.py      studies/samples/records/actions + reads plan/result
   views_schemas.py      schema library CRUD + ENA XML/XSD import/merge + grid selection
   middleware.py         skips Django's CSRF checks in local (single-user) mode
   auth.py               accounts, login sessions, admin bootstrap; (user, error_response) view helpers
@@ -577,7 +576,8 @@ server/
   dbsetup.py            one-time django.setup() bootstrap
   ena_service.py        studies/samples/records/actions — MIMICC glue only; every ENA request is made by
                         ena-submission-toolkit (records.py) over ena-api-client, never here
-  read_assign.py        scan / suggest / manifest (text) build for reads
+  read_assign.py        scan / suggest / manifest (text) build and upload plan for reads
+  pyodide/              ena_bridge.py (httpx over sync XHR + py() entry point), shims/pendulum.py
   session_store.py      submission sessions + reads ledger, Django-ORM-backed, owner-scoped
   schema_service.py     schema library: list/save/delete, ENA XML/XSD import/merge, grid selection
   _bootstrap.py         locates the committed schema/XSD assets (schemas/, assets/ena_schema/;

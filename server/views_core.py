@@ -20,6 +20,8 @@ STATIC_DIR = pathlib.Path(__file__).resolve().parent / "static"
 # The bundled LinkML schemas, fetched by the browser's Python (py()) into its
 # own filesystem — the same files _bootstrap resolves server-side.
 SCHEMAS_DIR = pathlib.Path(__file__).resolve().parent.parent / "schemas"
+# The ENA XSDs submit validates against, fetched the same way (_bootstrap.xsd_dir).
+ENA_SCHEMA_DIR = pathlib.Path(__file__).resolve().parent.parent / "assets" / "ena_schema"
 DH_DIR = STATIC_DIR / "dh"
 DH_TEMPLATES_DIR = DH_DIR / "templates"
 

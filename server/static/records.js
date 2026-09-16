@@ -172,13 +172,9 @@ $("recGenerate").onclick = async () => {
   if (!entries.length) { refreshSubmitButton(); return; }
   $("recGenerate").disabled = true;
   try {
-    const body = await api("/api/records/modify/preview", {
-      method: "POST",
-      body: JSON.stringify({
-        entity: recEntity(),
-        test: TEST,
-        records: entries.map(({ accession, changes }) => ({ accession, changes })),
-      }),
+    const body = await enaPy("ena_service.preview_modify_records", {
+      entity: recEntity(),
+      records: entries.map(({ accession, changes }) => ({ accession, changes })),
     });
     MANIFESTS = body.results || [];
     MANIFEST_KEY = changeKey(entries);
@@ -270,11 +266,7 @@ async function withEditableFields(rows) {
   const accessions = rows.map((row) => row.accession).filter(Boolean);
   if (!accessions.length) return rows;
   try {
-    const body = await api(`/api/records/${recEntity()}/fields`, {
-      method: "POST",
-      body: JSON.stringify({ accessions, test: TEST }),
-    });
-    const fields = body.fields || {};
+    const fields = await enaPy("ena_service.read_editable_fields", { entity: recEntity(), accessions });
     return rows.map((row) => ({ ...row, ...(fields[row.accession] || {}) }));
   } catch (e) {
     banner("recBanner", false, `Loaded ${recEntity()}, but not the fields held only in the record XML — those columns will be missing: ${e.message}`);
@@ -282,19 +274,17 @@ async function withEditableFields(rows) {
   }
 }
 
-/** The query string of a fetch. These are criteria on the *request*, applied
- *  server-side by ena-submission-toolkit — not the grid's own client-side
+/** The criteria of a fetch. These are criteria on the *request*, applied by
+ *  ena-submission-toolkit's list_records — not the grid's own client-side
  *  column filters. */
-function recCriteriaQuery() {
-  const params = new URLSearchParams({ test: String(TEST) });
-  const search = $("recSearch").value.trim();
-  const linked = $("recLinked").value.trim();
-  if (search) params.set("search", search);
-  if (linked) params.set("linked_to", linked);
-  if ($("recUnlinked").checked) params.set("unlinked", "true");
-  if ($("recFullFields").checked) params.set("full_fields", "true");
-  if ($("recStatus").value !== "all") params.set("status", $("recStatus").value);
-  return params.toString();
+function recCriteria() {
+  return {
+    status: $("recStatus").value,
+    search: $("recSearch").value.trim(),
+    linked_to: $("recLinked").value.trim(),
+    unlinked: $("recUnlinked").checked,
+    full_fields: $("recFullFields").checked,
+  };
 }
 
 $("recClear").onclick = () => {
@@ -323,12 +313,12 @@ $("recWrite").onchange = (e) => {
 
 async function loadRecords() {
   const entity = recEntity();
-  const query = recCriteriaQuery();
-  appendLog("recLog", `Fetching ${entity} (${query})…`);
+  const criteria = recCriteria();
+  appendLog("recLog", `Fetching ${entity} (${TEST ? "test" : "production"}, ${JSON.stringify(criteria)})…`);
   $("recCount").textContent = "loading…";
   recGrid().applyConfig({ entity, mode: "read", rowActions: $("recWrite").checked ? ROW_ACTIONS : [] });
   try {
-    let rows = await api(`/api/records/${entity}?${query}`);
+    let rows = await enaPy("ena_service.list_records", { entity, ...criteria });
     appendLog("recLog", `Got ${rows.length} ${entity} row(s).`);
     if (rows.length) {
       // Log every field actually present (not just the columns the grid
@@ -406,10 +396,7 @@ $("recSubmit").onclick = async () => {
   $("recSubmit").disabled = true;
   const payload = entries.map(({ accession, changes }) => ({ accession, changes }));
   try {
-    const body = await api("/api/records/modify", {
-      method: "POST",
-      body: JSON.stringify({ entity: recEntity(), test: TEST, records: payload }),
-    });
+    const body = await enaPy("ena_service.modify_records", { entity: recEntity(), records: payload });
     const results = body.results || [];
     logSubmission(entries, results);
     const failed = results.filter((result) => !result.success);
@@ -441,10 +428,7 @@ async function recAction(action, accession) {
   if (action !== "release" && !confirm(`${action.toUpperCase()} ${accession} in ${envLabel()}?`)) return;
   appendLog("recLog", `${action} ${accession}…`);
   try {
-    const r = await api("/api/records/action", {
-      method: "POST",
-      body: JSON.stringify({ action, accession, test: TEST, hold_until: hold }),
-    });
+    const r = await enaPy("ena_service.run_action", { action, accession, hold_until: hold });
     const detail = r.messages || "";
     appendLog("recLog", `${action} ${accession}: ${r.success ? "ok" : "failed"} — ${detail}`);
     logEntry({

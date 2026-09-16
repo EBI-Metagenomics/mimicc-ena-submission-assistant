@@ -1,11 +1,10 @@
 """Shared pytest fixtures.
 
-Single-user, local-only: no database, no accounts, no server-side state. API
+Single-user, local-only: no database, no accounts, no server-side state. Server
 tests drive Django views in-process via a thin async-compatible wrapper around
-``django.test.Client``. Webin credentials are supplied per-request as headers
-(see ``server/webin_creds.py``); the ``with_creds`` fixture injects them into the
-test client. UI tests drive a real WSGI server with Playwright; the browser
-holds credentials itself.
+``django.test.Client``. UI tests drive a real WSGI server with Playwright; the
+browser holds credentials itself and talks to ENA from its Python worker, which
+``test_ui.py`` stubs.
 """
 
 from __future__ import annotations
@@ -31,12 +30,7 @@ import django  # noqa: E402
 
 django.setup()
 
-import ena_service  # noqa: E402
 from django.test import Client as _DjangoClient  # noqa: E402
-
-# Test creds, attached as headers by the with_creds fixture (the stateless
-# backend only checks they're present; ena_service is mocked in tests).
-_TEST_CREDS_HEADERS = {"X-Webin-Username": "Webin-test", "X-Webin-Password": "secret"}
 
 
 class AsyncClient:
@@ -109,13 +103,6 @@ def client():
     return AsyncClient()
 
 
-@pytest.fixture
-def with_creds(client):
-    """Attach Webin credential headers to the test client for the request."""
-    client._headers.update(_TEST_CREDS_HEADERS)
-    return ("Webin-test", "secret")
-
-
 # ---------------------------------------------------------------------------
 # Mock helpers (shared)
 # ---------------------------------------------------------------------------
@@ -138,61 +125,6 @@ MOCK_READS_LOG = (
 def live_server_url():
     import config.wsgi as wsgi_module
 
-    original_list_records = ena_service.list_records
-    original_validate_credentials = ena_service.validate_credentials
-
-    def list_records(creds, entity, **kwargs):
-        if entity == "studies":
-            return [
-                {"alias": "studyA", "accession": "ERP111", "title": "Study A", "status": "PRIVATE"},
-                {"alias": "studyB", "accession": "ERP222", "title": "Study B", "status": "PRIVATE"},
-            ]
-        if entity == "samples":
-            return [
-                {"alias": "MIMICC_A_1", "accession": "ERS111", "title": "Sample A1", "status": "PRIVATE"},
-                {"alias": "MIMICC_B_2", "accession": "ERS222", "title": "Sample B2", "status": "PRIVATE"},
-            ]
-        if entity == "runs":
-            return [
-                {
-                    "alias": "runA",
-                    "accession": "ERR111",
-                    "experiment_accession": "ERX111",
-                    "study_accession": "ERP111",
-                    "sample_accession": "ERS111",
-                    "status": "PRIVATE",
-                    # ENA's run-processing report: whether the read files are
-                    # archived, which registering a run does not say.
-                    "process_status": "COMPLETED",
-                    "process_date": "2026-01-02",
-                },
-                {
-                    "alias": "runB",
-                    "accession": "ERR222",
-                    "experiment_accession": "ERX222",
-                    "study_accession": "ERP111",
-                    "sample_accession": "ERS222",
-                    "status": "PRIVATE",
-                    "process_status": "IN_QUEUE",
-                    "process_date": "2026-01-02",
-                },
-            ]
-        if entity == "experiments":
-            return [
-                {
-                    "alias": "expA",
-                    "accession": "ERX111",
-                    "title": "Experiment A",
-                    "study_accession": "ERP111",
-                    "sample_accession": "ERS111",
-                    "status": "PRIVATE",
-                },
-            ]
-        return original_list_records(creds, entity, **kwargs)
-
-    ena_service.list_records = list_records
-    ena_service.validate_credentials = lambda *a, **k: None
-
     server = make_server("127.0.0.1", 9911, wsgi_module.application, server_class=WSGIServer)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -211,5 +143,3 @@ def live_server_url():
     yield url
     server.shutdown()
     thread.join(timeout=5)
-    ena_service.list_records = original_list_records
-    ena_service.validate_credentials = original_validate_credentials

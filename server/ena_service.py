@@ -41,6 +41,9 @@ if TYPE_CHECKING:  # pragma: no cover
 
 # Default column filter for MIMICC sample preparation (from
 # shell/submit_mimicc_samples.sh): keep only sample/study-relevant slots.
+# Submission alias for MODIFYs from this app, so they are identifiable in ENA.
+MODIFY_ALIAS = "mimicc-assistant-modify"
+
 DEFAULT_SAMPLE_FILTER = "source IN ('ERC000025', 'MIMICC.custom', 'ENA.sample', 'ENA.project')"
 
 
@@ -120,8 +123,8 @@ def validate_credentials(creds: Credentials, *, test: bool) -> None:
 # ---------------------------------------------------------------------------
 # Records browser
 #
-# All three below are thin passthroughs to ``ena_submission_toolkit.records``;
-# they exist only so the views keep one import and one calling convention.
+# Thin passthroughs to ``ena_submission_toolkit.records``, so the page (via
+# ``py()``) has one module and one calling convention.
 # ---------------------------------------------------------------------------
 
 
@@ -175,14 +178,24 @@ def read_editable_fields(
 
 
 def preview_modify_records(
-    creds: Credentials, entity: str, records: list[dict[str, Any]], *, test: bool, submission_alias: str
+    creds: Credentials,
+    entity: str,
+    records: list[dict[str, Any]],
+    *,
+    test: bool,
+    submission_alias: str = MODIFY_ALIAS,
 ) -> dict[str, Any]:
     """Build the MODIFY XML for a change set without submitting it."""
     return _records().preview_modify_records(creds, entity, records, test=test, submission_alias=submission_alias)
 
 
 def modify_records(
-    creds: Credentials, entity: str, records: list[dict[str, Any]], *, test: bool, submission_alias: str
+    creds: Credentials,
+    entity: str,
+    records: list[dict[str, Any]],
+    *,
+    test: bool,
+    submission_alias: str = MODIFY_ALIAS,
 ) -> dict[str, Any]:
     """Submit a change set as a MODIFY.
 
@@ -192,6 +205,15 @@ def modify_records(
     the record's current XML and patches it instead.
     """
     return _records().modify_records(creds, entity, records, test=test, submission_alias=submission_alias)
+
+
+def suggest_samples(
+    creds: Credentials, groups: list[dict[str, Any]], *, test: bool, max_results: int = 5000
+) -> dict[str, Any]:
+    """Match scanned read groups to the account's samples by filename
+    (``read_assign.suggest``), returning the samples too for the pairing grid."""
+    samples = list_records(creds, "samples", test=test, max_results=max_results)
+    return {"groups": read_assign.suggest(groups, samples), "samples": samples}
 
 
 def lookup_existing_runs(

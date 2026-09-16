@@ -113,15 +113,19 @@ serving a **single-page vanilla-JavaScript** UI with **no Node/npm build step**.
 **stateless** — no database, no auth, no Django sessions, no CSRF middleware. All
 persistent state lives in the browser.
 
-- **Backend** (`server/`): `views_core.py` (index, `/api/health`, static and `/dh`
-  serving), `views_records.py` (study/sample prepare + submit, record listing,
-  MODIFY, lifecycle actions, reads suggest/plan/result), `views_schemas.py` (schema
-  library). `ena_service.py` is MIMICC glue over `ena-submission-toolkit` (its
-  `records.py` owns listing, MODIFY and lifecycle actions) — no ENA request is made
-  directly in this repo; `schema_service.py` wraps `linkml-lib` and compiles schemas
-  into the fixed DH template folders; `read_assign.py` groups reads and builds
-  webin-cli manifests; `webin_creds.py` turns per-request `X-Webin-Username` /
-  `X-Webin-Password` headers into credentials (nothing is stored server-side).
+- **Python in the browser** (`server/pyodide/`, `server/static/py/`): every ENA
+  call — study/sample prepare + submit, record listing, MODIFY, lifecycle actions,
+  reads suggest/plan/result — runs in a Pyodide Web Worker. The page calls
+  `py("module.function", kwargs)`; `ena_bridge.py` routes `httpx` over
+  synchronous XHR, so requests go from the browser straight to ENA (CORS-enabled)
+  with the Webin credentials and never touch this app's server. `ena_service.py`
+  is MIMICC glue over `ena-submission-toolkit` (its `records.py` owns listing,
+  MODIFY and lifecycle actions) — no ENA request is made directly in this repo;
+  `read_assign.py` groups reads and builds webin-cli manifests and the upload plan.
+- **Backend** (`server/`): `views_core.py` (index, `/api/health`, static, `/dh`,
+  `/schemas` and `/assets/ena_schema` serving), `views_schemas.py` (schema
+  library); `schema_service.py` wraps `linkml-lib` and compiles schemas into the
+  fixed DH template folders.
 - **Frontend** (`server/static/`): `index.html` shell plus per-concern scripts
   (`core.js` API clients, `credentials.js`, `workspace.js`, `records.js`,
   `samples.js`, `reads.js`, `schema.js`, `dataharmonizer.js`, `theme.js`,
@@ -258,8 +262,8 @@ host feeds to `ena-submission-toolkit`'s MODIFY path), `row-action` (release/hol
 suppress/cancel, executed by the host), `filter-change` and `layout-change`. Status
 of "cancelled"/"suppressed" include/exclude toggles are built in, because every
 consumer wants them. In the assistant it backs the Studies, Samples, Reads,
-sample-pairing and Records grids, with rows supplied by the server's
-`/api/records/*` endpoints.
+sample-pairing and Records grids, with rows supplied by
+`ena_service.list_records` running in the browser.
 
 Repo: `EBI-Metagenomics/ena-browser`. The assistant's adoption plan lives in this
 repo's `ENA_BROWSER_PLAN.md`.

@@ -1,9 +1,9 @@
 """Django settings for the single-user, local-only HTTP layer (views_*.py, urls.py).
 
 No database, no auth, no sessions, no CSRF: the app runs as one stateless local
-process that serves the SPA, proxies ENA, and builds XML. All persistence lives
-in the browser. Webin credentials arrive per-request as headers (see
-``webin_creds``).
+process that serves the SPA, the schema library and static assets. Everything
+that talks to ENA runs in the browser (``py()``); all persistence lives there
+too, and Webin credentials never reach this server.
 """
 
 from __future__ import annotations

@@ -206,11 +206,10 @@ function refreshAssignedCounts() {
 }
 
 async function loadReadSamples() {
-  const params = new URLSearchParams({ test: String(TEST), status: "all" });
-  if ($("pairSearch").value.trim()) params.set("search", $("pairSearch").value.trim());
-  if ($("pairLinked").value.trim()) params.set("linked_to", $("pairLinked").value.trim());
   try {
-    READ_SAMPLES = await api(`/api/records/samples?${params}`);
+    READ_SAMPLES = await enaPy("ena_service.list_records", {
+      entity: "samples", search: $("pairSearch").value.trim(), linked_to: $("pairLinked").value.trim(),
+    });
     if (!READ_SAMPLES.some((sample) => sampleAccession(sample) === SELECTED_SAMPLE)) {
       SELECTED_SAMPLE = "";
     }
@@ -384,7 +383,7 @@ async function suggestSamples() {
   if (!RUN_ROWS.length) { banner("readsBanner", false, "Scan first."); return; }
   try {
     const groups = RUN_ROWS.map((r) => ({ group: r.NAME, files: r.files, paired: r.paired, files_by_mate: { 1: r.FASTQ1, 2: r.FASTQ2 } }));
-    const r = await api("/api/reads/suggest", { method: "POST", body: JSON.stringify({ groups, test: TEST }) });
+    const r = await enaPy("ena_service.suggest_samples", { groups });
     r.groups.forEach((g, i) => { if (g.suggested_sample) { RUN_ROWS[i].SAMPLE = g.suggested_sample; RUN_ROWS[i].confidence = g.confidence; } });
     READ_SAMPLES = r.samples;
     renderRunTable();
@@ -600,7 +599,7 @@ async function refreshReadsGrid(results = []) {
   grid.style.display = keep.length ? "block" : "none";
   if (!keep.length) { grid.setRows([]); return; }
   try {
-    const rows = await api(`/api/records/runs?test=${TEST}&status=all`);
+    const rows = await enaPy("ena_service.list_records", { entity: "runs" });
     grid.applyConfig({ entity: "runs", mode: "read", selectionMode: "none", rowActions: [] });
     applySavedGridLayout("readsOut", "runs");
     grid.setRows(rows);
@@ -612,11 +611,9 @@ async function refreshReadsGrid(results = []) {
 
 /** Which runs to upload and which to skip (already done, or already in ENA
  *  under their stable alias), with each upload's manifest text. */
-async function readsPlan(runs) {
-  if (!credsConfigured()) throw new Error("Credentials not set. Enter your Webin username and password.");
-  return py("ena_service.plan_reads", {
-    creds: CREDS, runs, test: TEST, prefix: readsPrefix(), ledger: READS_RUNS,
-    force_reupload: $("forceReupload").checked,
+function readsPlan(runs) {
+  return enaPy("ena_service.plan_reads", {
+    runs, prefix: readsPrefix(), ledger: READS_RUNS, force_reupload: $("forceReupload").checked,
   });
 }
 
