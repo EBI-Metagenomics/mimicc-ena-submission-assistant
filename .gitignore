@@ -27,3 +27,6 @@ htmlcov/
 
 # Serena tool state
 .serena/
+
+# Browser Python bundle — built by scripts/build_py_bundle.py (task build:py)
+server/static/py/app.zip

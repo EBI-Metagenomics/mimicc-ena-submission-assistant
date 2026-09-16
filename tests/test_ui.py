@@ -1070,3 +1070,69 @@ def test_theme_toggle_switches_and_persists(page):
     assert page.get_attribute("html", "data-theme") == "dark"
     page.click("#themeToggle")
     assert page.get_attribute("html", "data-theme") == "light"
+
+
+# ---------------------------------------------------------------------------
+# Python in the browser (Pyodide worker) — STATIC_BROWSER_PLAN.md Phase 2
+# ---------------------------------------------------------------------------
+
+_PYODIDE_MJS = "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide.mjs"
+
+
+@pytest.fixture(scope="session")
+def py_bundle():
+    """Build app.zip, and skip when Pyodide's CDN (or PyPI) is out of reach."""
+    import importlib.util
+    from pathlib import Path
+
+    import httpx
+
+    try:
+        httpx.get(_PYODIDE_MJS, timeout=10).raise_for_status()
+        httpx.get("https://pypi.org/simple/linkml/", timeout=10).raise_for_status()
+    except httpx.HTTPError as exc:
+        pytest.skip(f"Pyodide CDN / PyPI unreachable: {exc}")
+    script = Path(__file__).resolve().parent.parent / "scripts" / "build_py_bundle.py"
+    spec = importlib.util.spec_from_file_location("build_py_bundle", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.build()
+
+
+def test_python_stack_runs_in_a_browser_worker(page, py_bundle):
+    """The real submission stack loads in Pyodide and reaches ENA through the
+    sync-XHR httpx transport, with Basic auth, from the worker."""
+    seen = {}
+
+    def reports(route):
+        seen["authorization"] = route.request.headers.get("authorization")
+        route.fulfill(
+            status=200, content_type="application/json", headers={"access-control-allow-origin": "*"}, body="[]"
+        )
+
+    page.route("**/ena/submit/report/**", reports)
+    results = page.evaluate(
+        """async () => [
+            await py('read_assign.group_files', { names: ['a_R1.fastq.gz', 'a_R2.fastq.gz'] }),
+            await py('ena_service.validate_credentials', { creds: { username: 'Webin-1', password: 'pw' }, test: true }),
+            await py('os.system', { command: 'true' }).catch((e) => 'refused: ' + e.message),
+        ]"""
+    )
+
+    grouped, validated, refused = results
+    assert grouped[0]["group"] == "a" and grouped[0]["paired"]
+    assert validated is None
+    assert seen["authorization"].startswith("Basic ")
+    assert refused.startswith("refused: Not callable")
+
+
+def test_py_rejects_when_the_worker_cannot_start(page):
+    """A worker that dies on load never answers; py() must fail, not hang."""
+    page.route(
+        "**/static/py/worker.js",
+        lambda route: route.fulfill(status=200, content_type="text/javascript", body="throw new Error('boom');"),
+    )
+    message = page.evaluate(
+        "() => py('read_assign.group_files', { names: [] }).then(() => 'resolved', (e) => e.message)"
+    )
+    assert message.startswith("Python runtime failed to start")

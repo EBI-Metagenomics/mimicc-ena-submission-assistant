@@ -41,6 +41,43 @@ async function api(path, opts = {}) {
   return body;
 }
 
+// Call the app's Python in the browser (static/py/worker.js): `target` is
+// "module.function" in ena_service / read_assign / schema_service. The worker
+// starts on first use — Pyodide and its packages take seconds to load, so pages
+// that never need Python never pay for it.
+let _pyWorker = null;
+const _pyPending = new Map();
+let _pySeq = 0;
+
+function pyWorker() {
+  if (_pyWorker) return _pyWorker;
+  _pyWorker = new Worker("/static/py/worker.js", { type: "module" });
+  _pyWorker.onmessage = ({ data }) => {
+    const call = _pyPending.get(data.id);
+    if (!call) return;
+    _pyPending.delete(data.id);
+    if (data.error !== undefined) call.reject(new Error(data.error));
+    else call.resolve(data.result);
+  };
+  // A worker that fails to start never answers; fail every waiting call and
+  // start afresh on the next one.
+  _pyWorker.onerror = (e) => {
+    const err = new Error(`Python runtime failed to start: ${e.message || "worker error"}`);
+    _pyPending.forEach((call) => call.reject(err));
+    _pyPending.clear();
+    _pyWorker = null;
+  };
+  return _pyWorker;
+}
+
+function py(target, kwargs = {}) {
+  return new Promise((resolve, reject) => {
+    const id = ++_pySeq;
+    _pyPending.set(id, { resolve, reject });
+    pyWorker().postMessage({ id, target, kwargs });
+  });
+}
+
 // Call the local reads upload helper (cross-origin to 127.0.0.1:<helper_port>).
 async function helperApi(path, opts = {}) {
   const res = await fetch(HELPER_BASE + path, {

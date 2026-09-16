@@ -21,6 +21,14 @@ tasks:
           curl -fsSL -o server/static/vendor/ena-browser/{{.ITEM}}
           https://github.com/EBI-Metagenomics/ena-browser/releases/download/{{.ENA_BROWSER_REF}}/{{.ITEM}}
 
+  build:py:
+    desc: >
+      Build server/static/py/app.zip, the Python the browser worker runs (pinned
+      EBI packages from .venv + server modules). Re-run after `uv sync` or
+      editing server/*.py.
+    cmds:
+      - .venv/bin/python scripts/build_py_bundle.py
+
   test:
     desc: Run the pytest suite (API + read-assignment unit tests, no Docker)
     cmds:
