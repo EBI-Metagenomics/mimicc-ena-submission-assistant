@@ -307,7 +307,7 @@ function importWorkspace() {
 }
 
 async function clearWorkspace() {
-  if (!confirm("Clear the workspace? All entered metadata, logs and the reads resume ledger are removed from this browser.")) return;
+  if (!confirm("Clear this session? All entered metadata, logs and the reads resume ledger are removed from this browser.")) return;
   if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
   suppressSave = true;  // a pending autosave must not write it back before the reload
   // An empty record, not a delete: a missing one would re-adopt an old session.
