@@ -445,7 +445,7 @@ load, with no prompt:
 - **Where** — IndexedDB in this browser profile, which is the **only copy**. A private window loses
   it on close; clearing site data deletes it. Use **Download** in the header to back it up or move
   it to another machine, **Import…** to restore one (an old `.session.json` imports too), and
-  **Clear** to start over.
+  **Clear session** beside Download and Import to start over.
 - **One at a time** — two submissions side by side in one browser profile are no longer possible.
   Download one before clearing, and import it again later.
 - **Resumable reads** — each run is submitted under the alias `<submission prefix>_<run name>`.

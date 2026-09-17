@@ -600,10 +600,11 @@ def test_clear_workspace_starts_blank(page):
     page.fill("#readsPrefix", "batch-1")
     page.uncheck("#expDhAutoSync")
     page.evaluate("() => saveWorkspaceNow()")
+    assert page.locator("#workspaceChip #clearSession").count() == 1
 
     page.on("dialog", lambda d: d.accept())
     with page.expect_navigation():
-        page.click("#workspaceChip button:has-text('Clear')")
+        page.click("#clearSession")
     _wait_for_workspace(page)
     assert page.input_value("#readsPrefix") == ""
     assert page.is_checked("#expDhAutoSync")
