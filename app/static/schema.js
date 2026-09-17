@@ -7,6 +7,11 @@
 // the browser: the library in IndexedDB, LinkML work in Python (py()).
 // ---------------------------------------------------------------------------
 let SCHEMA_LIST = [];
+// Several page actions can refresh the library at once (initial seeding,
+// saving, deleting).  Only let the newest read update the shared list and the
+// pickers: an older IndexedDB read must not overwrite a schema just saved in
+// this page.
+let _schemaRefreshRevision = 0;
 
 // ---------------------------------------------------------------------------
 // The library: IndexedDB (SCHEMA_STORE, workspace.js), one record per schema —
@@ -43,9 +48,13 @@ async function readLibrarySchema(schemaId) {
 }
 
 async function refreshSchemaList() {
+  const revision = ++_schemaRefreshRevision;
   try {
-    SCHEMA_LIST = await listLibrarySchemas();
+    const schemas = await listLibrarySchemas();
+    if (revision !== _schemaRefreshRevision) return SCHEMA_LIST;
+    SCHEMA_LIST = schemas;
   } catch (e) {
+    if (revision !== _schemaRefreshRevision) return SCHEMA_LIST;
     console.error("Could not load the schema library", e);
     SCHEMA_LIST = [];
   }
@@ -54,6 +63,7 @@ async function refreshSchemaList() {
   populateSchemaSelect("expSchemaSelect");
   populateSchemaSelect("studySchemaSelect");
   populateSchemaMultiSelect("schemaImportExisting");
+  return SCHEMA_LIST;
 }
 
 function schemaOptionLabel(s) {
@@ -257,8 +267,8 @@ async function deleteSchemaFromLibrary(schemaId) {
       await dropGridSchema(role);
       await reloadDhGrid(role);
     }
+    await refreshSchemaList();
     banner("schemaLibraryBanner", true, `Deleted "${schemaId}".`);
-    refreshSchemaList();
   } catch (e) { banner("schemaLibraryBanner", false, e.message); }
 }
 
@@ -417,8 +427,11 @@ async function saveExportedSchema(yamlText) {
   if (!name) { banner("schemaEditorBanner", false, "Enter a name to save as."); return; }
   try {
     const id = await saveLibrarySchema(name, yamlText);
+    // Do not announce success until every tab's schema picker has the new
+    // library entry.  This makes a just-created schema usable immediately,
+    // even when the user switches tabs as soon as the save completes.
+    await refreshSchemaList();
     banner("schemaEditorBanner", true, `Saved as "${id}".`);
-    refreshSchemaList();
   } catch (e) { banner("schemaEditorBanner", false, e.message); }
 }
 

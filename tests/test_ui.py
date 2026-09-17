@@ -1297,6 +1297,30 @@ def test_saving_a_schema_names_it_in_python_and_stores_it(page):
     assert call["kwargs"] == {"yaml_text": yaml_text, "name": "My Schema"}
 
 
+def test_saving_a_schema_makes_it_available_in_every_schema_picker(page):
+    yaml_text = "name: immediate_schema\nid: https://example.org/immediate_schema\nclasses: {}\n"
+    _stub_py(
+        page,
+        {
+            "schema_service.describe_schema": {
+                "id": "immediate-schema",
+                "name": "immediate_schema",
+                "title": "Immediate schema",
+                "description": None,
+            }
+        },
+    )
+    page.evaluate("async () => { await refreshSchemaList(); $('schemaSaveName').value = 'Immediate schema'; }")
+
+    # saveExportedSchema resolves only after the library has been republished
+    # to the selectors that live in the Samples, Reads, Studies, and Schema tabs.
+    page.evaluate("async (yaml) => await saveExportedSchema(yaml)", yaml_text)
+
+    for select_id in ("sampleSchemaSelect", "expSchemaSelect", "studySchemaSelect", "schemaImportExisting"):
+        assert page.locator(f"#{select_id} option[value='immediate-schema']").count() == 1
+    assert 'Saved as "immediate-schema".' in page.inner_text("#schemaEditorBanner")
+
+
 def test_building_a_schema_sends_sources_and_library_schemas_as_files(page):
     _stub_py(page, {"schema_service.import_build": "name: merged\n"})
     page.evaluate("() => { loadSchemaIntoEditor = (yaml) => { window.__editorYaml = yaml; }; }")
