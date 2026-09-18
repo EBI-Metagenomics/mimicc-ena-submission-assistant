@@ -17,9 +17,8 @@ dependencies = [
     "linkml",
 
     # Pinned sibling packages (replaces scripts/vendor.sh's cp -R from ../<repo>).
-    # Use the URL-migration commit until ena-submission-toolkit cuts its next release.
     "linkml-lib @ git+https://github.com/EBI-Metagenomics/linkml-lib.git@v0.1.0",
-    "ena-submission-toolkit @ git+https://github.com/EBI-Metagenomics/ena-submission-toolkit.git@f23f30d69d109b8223e44ae3c7f8fd99c83df474",
+    "ena-submission-toolkit @ git+https://github.com/EBI-Metagenomics/ena-submission-toolkit.git@v0.1.5",
 ]
 
 # Test-only. `uv sync` installs these by default and prunes anything it does
