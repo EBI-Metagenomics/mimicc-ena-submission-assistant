@@ -6,8 +6,8 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 import ena_service
+from ena_api._processing import _coerce
 from ena_api.models import ExperimentReport, RunReport
-from ena_api.reports import _coerce
 
 
 class _ReportRow(dict):

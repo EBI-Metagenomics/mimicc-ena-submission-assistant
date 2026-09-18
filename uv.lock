@@ -438,8 +438,8 @@ wheels = [
 
 [[package]]
 name = "ena-api-client"
-version = "0.1.3"
-source = { git = "https://github.com/EBI-Metagenomics/ena-api-client.git?rev=v0.1.3#870180e77197a096d79d5b6745c5757221f31cb9" }
+version = "0.2.0"
+source = { git = "https://github.com/EBI-Metagenomics/ena-api-client.git?rev=v0.2.0#9c3b7acbfd253a79b6bf64bd8e58c6ce1dec8e76" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
@@ -458,7 +458,7 @@ dependencies = [
 [[package]]
 name = "ena-submission-toolkit"
 version = "0.1.4"
-source = { git = "https://github.com/EBI-Metagenomics/ena-submission-toolkit.git?rev=f23f30d69d109b8223e44ae3c7f8fd99c83df474#f23f30d69d109b8223e44ae3c7f8fd99c83df474" }
+source = { git = "https://github.com/EBI-Metagenomics/ena-submission-toolkit.git?rev=v0.1.5#f63d586aa6a3d14ce4b0fbddb7fb6887eb6ae85c" }
 dependencies = [
     { name = "ena-api-client" },
     { name = "ena-api-handler" },
@@ -466,6 +466,7 @@ dependencies = [
     { name = "linkml-lib" },
     { name = "lxml" },
     { name = "pendulum" },
+    { name = "pydantic" },
     { name = "typer" },
 ]
 
@@ -1192,7 +1193,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ena-submission-toolkit", git = "https://github.com/EBI-Metagenomics/ena-submission-toolkit.git?rev=f23f30d69d109b8223e44ae3c7f8fd99c83df474" },
+    { name = "ena-submission-toolkit", git = "https://github.com/EBI-Metagenomics/ena-submission-toolkit.git?rev=v0.1.5" },
     { name = "httpx" },
     { name = "linkml" },
     { name = "linkml-lib", git = "https://github.com/EBI-Metagenomics/linkml-lib.git?rev=v0.1.0" },

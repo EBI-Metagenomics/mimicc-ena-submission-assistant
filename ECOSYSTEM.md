@@ -138,8 +138,8 @@ whatever serves the files (nginx in the Docker image, `scripts/serve_dist.py` lo
   the browser (IndexedDB); the grids' compiled schemas in Cache Storage, served
   by a service worker.
 - **Pinned sibling libraries** (in `pyproject.toml`, no submodules):
-  `ena-api-client @ ...@v0.1.0`, `linkml-lib @ ...@v0.1.0`,
-  `ena-submission-toolkit @ ...@v0.1.0`.
+  `linkml-lib @ ...@v0.1.0`, `ena-submission-toolkit @ ...@v0.1.5`.
+  `ena-api-client @ ...@v0.2.0` comes in transitively, via the toolkit.
 
 ### 4.2 dataharmonizer-template-builder (dhtb)
 
@@ -174,8 +174,13 @@ submission, lifecycle actions release/hold/suppress/cancel) and the Reports API
 (querying studies/samples/runs). Built on **httpx** (transport) and **pydantic** /
 **pydantic-settings** (typed models + env config). It is the single point of HTTP
 contact with ENA's Webin APIs (read files go via `webin-cli` instead). Distributed
-via pip; consumed by `ena-submission-toolkit` and the assistant. Module layout:
-`ena_api/` (client, config, models, submit, reports).
+via pip; consumed by `ena-submission-toolkit` and the assistant. Module layout
+(src layout since v0.2.0): `src/ena_api/` — handwritten `client.py`, `config.py`,
+`submit.py`, `reports.py`, `browser.py`, `_processing.py`, `types.py`,
+`exceptions.py`, plus **generated** `models/` (report models, endpoint tables,
+receipt entity tags). `scripts/generate_models.py` regenerates `models/` from the
+committed `snapshots/` of ENA's own API definitions; neither `snapshots/` nor
+`scripts/` ships in the wheel, so they stay out of the Pyodide bundle.
 
 ### 4.4 linkml-lib
 
@@ -196,7 +201,7 @@ Schema-driven **Python** library + **Typer** CLI (`ena-submission-toolkit`) for
 building and submitting ENA records. It orchestrates XML manifest building, unit
 normalisation, duplicate detection, **lxml** XSD validation (ENA/SRA XSDs bundled in
 `assets/ena_schema/`), and submission via the Webin API. Depends on `ena-api-client`
-(transport) and `linkml-lib` (schema utilities/unit rules), both pinned at `v0.1.0`.
+(transport, `v0.2.0`) and `linkml-lib` (schema utilities/unit rules, `v0.1.0`).
 Key modules (`src/ena_submission_toolkit/`): `submit_sample.py`, `submit_study.py`,
 `prepare_dh_output.py`, `records.py`, `common.py`, `cli.py`. The assistant imports
 these directly.
@@ -349,14 +354,15 @@ and edits* schemas interactively (React + TS pays for itself).
 
 - **Sibling Python libraries are pinned git dependencies**, not submodules or
   vendored copies. The assistant's `pyproject.toml` pins
-  `ena-api-client @ git+...@v0.1.0`, `linkml-lib @ ...@v0.1.0` and
-  `ena-submission-toolkit @ ...@v0.1.0`; dhtb pins `linkml-lib` and `dh-builder-lib`
+  `linkml-lib @ git+...@v0.1.0` and `ena-submission-toolkit @ ...@v0.1.5`, which
+  brings `ena-api-client @ ...@v0.2.0` with it; dhtb pins `linkml-lib` and `dh-builder-lib`
   the same way. Upgrades happen by bumping a tag.
 - **ena-browser is vendored as a built artefact.** The assistant commits
   `dist/ena-browser.iife.js` + `.css` from a pinned release tag into
   `app/static/vendor/ena-browser/` and loads them with plain `<script>`/`<link>`
   tags. It depends on nothing else in the ecosystem — the only shared vocabulary is
-  the Reports API field names (mirrored from `ena-api-client`'s models) and the ENA
+  the Reports API field names (mirrored from `ena-api-client`'s generated
+  `src/ena_api/models/reports/`) and the ENA
   status values.
 - **DataHarmonizer is built, not imported.** A Docker build stage clones the fork
   (`...DataHarmonizer.git#v2.1.1-mimicc`) and runs `dh-builder`'s build steps
