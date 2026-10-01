@@ -309,18 +309,21 @@ function loadExpDhGridWhenReady(exportObj) {
     const dh = expDhApi();
     if (!dh || !dh.loadExportJson) return;
     clearInterval(poll);
+    expDefaultsFromGrid(dh);  // grid is still fresh here — defaults are visible
     try { dh.loadExportJson(exportObj); } catch { /* schema mismatch — leave grid empty */ }
+    syncPairingsToExperimentDhNow();  // drop rows of runs the saved export outlived
   }, 500);
   setTimeout(() => clearInterval(poll), 15000);
 }
 
 function startExpDhAutosave() {
   const poll = setInterval(() => {
-    if (!expDhApi()) return;
+    const dh = expDhApi();
+    if (!dh) return;
     clearInterval(poll);
     if (expDhAutosaveTimer) clearInterval(expDhAutosaveTimer);
     expDhAutosaveTimer = setInterval(autosaveExpDhExport, DH_AUTOSAVE_INTERVAL_MS);
-    EXP_SYNCED.clear();           // fresh grid — nothing in it is known-synced
+    expDefaultsFromGrid(dh);
     syncPairingsToExperimentDhNow(); // catch up on any pairings made before this grid was ready
   }, 500);
 }
@@ -376,16 +379,25 @@ $("studyDhFrame").addEventListener("load", () => stabilizeDataHarmonizerFrameRow
 $("studyDhFrame").addEventListener("load", markDhFrameLoaded);
 $("studyDhFrame").addEventListener("load", () => disableIframeFocusWhenInactive($("studyDhFrame")));
 
-// Push each pairing row's NAME+SAMPLE into the experiment grid, touching
-// only those two columns (upsertRow) so anything already filled in for that
-// row — manually, or via the schema's own ifabsent defaults — is preserved.
+// The experiment grid is a PROJECTION of the pairing table: one row per run,
+// in pairing-table order. A paired run is one run, so it gets one experiment
+// row — not one per mate file.
 //
-// Each upsertRow is a Handsontable round trip, so re-pushing every row on
-// every pairing edit made the grid crawl. Two fixes: only push rows whose
-// NAME/SAMPLE actually changed since the last push (EXP_SYNCED), and coalesce
-// bursts of edits into one pass. The auto-sync checkbox turns the automatic
-// pass off entirely; the Update button forces one.
-const EXP_SYNCED = new Map();  // NAME -> last SAMPLE pushed to the grid
+// This is a whole-grid replace (loadExportJson) rather than a row-by-row
+// upsert, because upserting could only ever add and update: it left behind
+// the rows of runs that no longer exist (the two single-end rows a pair was
+// merged from, most visibly) and it appended after Handsontable's bank of
+// spare rows, so the grid opened on blank rows with the real ones below.
+//
+// Replacing rows means re-supplying everything the grid would otherwise
+// lose: anything already in the row for that run (manual edits, or the
+// schema's own ifabsent defaults) is carried over by NAME, and a run with no
+// row yet starts from the schema defaults (EXP_DEFAULTS, read off an unnamed
+// row of the fresh grid — loadData does not re-run DH's default population).
+//
+// The auto-sync checkbox turns the automatic pass off entirely; the Update
+// button forces one.
+let EXP_DEFAULTS = null;        // ifabsent defaults, captured from a fresh grid
 let expSyncTimer = null;
 
 function expAutoSyncOn() { return $("expDhAutoSync")?.checked !== false; }
@@ -396,25 +408,58 @@ function syncPairingsToExperimentDh() {
   expSyncTimer = setTimeout(() => { expSyncTimer = null; syncPairingsToExperimentDhNow(); }, 200);
 }
 
+function expRowKey(row) { return String(row?.[EXP_KEY_TITLE] ?? "").trim(); }
+
+/** Remember the schema's ifabsent defaults while the grid still has unnamed
+ *  rows carrying them (i.e. before anything is loaded into it). */
+function captureExpDefaults(rows) {
+  const blank = (rows || []).find((r) => !expRowKey(r) && Object.keys(r).length);
+  if (blank) EXP_DEFAULTS = blank;
+}
+
+function expDefaultsFromGrid(dh) {
+  try { captureExpDefaults(expContainerRows(dh.getExportJson()).rows); }
+  catch { /* best-effort only */ }
+}
+
+/** The single class the experiment template holds, and its exported rows. */
+function expContainerRows(exportObj) {
+  const container = exportObj?.Container || {};
+  const cls = Object.keys(container)[0] || "";
+  return { exportObj, cls, rows: (cls && container[cls]) || [] };
+}
+
 function syncPairingsToExperimentDhNow() {
   const dh = expDhApi();
-  if (!dh) return 0;
-  const entries = [];
-  RUN_ROWS.forEach((row) => {
-    if (!row.NAME) return;
-    const sample = row.SAMPLE || "";
-    if (EXP_SYNCED.get(row.NAME) === sample) return;
-    entries.push({ key: row.NAME, values: { [EXP_SAMPLE_TITLE]: sample } });
-  });
-  if (!entries.length) return 0;
+  if (!dh || !dh.loadExportJson) return 0;
+  let current;
+  try { current = expContainerRows(dh.getExportJson()); } catch { return 0; }
+  if (!current.cls) return 0;
+
+  captureExpDefaults(current.rows);
+  const keep = new Map(current.rows.filter(expRowKey).map((r) => [expRowKey(r), r]));
+
+  const runs = RUN_ROWS.filter((r) => r.NAME);
+  const next = runs.map((run) => ({
+    ...(EXP_DEFAULTS || {}),
+    ...(keep.get(run.NAME) || {}),
+    [EXP_KEY_TITLE]: run.NAME,
+    [EXP_SAMPLE_TITLE]: run.SAMPLE || "",
+  }));
+
+  // Already a faithful projection? Then don't touch the grid — a reload would
+  // throw away the user's cell selection and whatever they are mid-edit on.
+  const named = current.rows.filter(expRowKey);
+  if (named.length === next.length
+      && named.every((r, i) => expRowKey(r) === next[i][EXP_KEY_TITLE]
+                            && String(r[EXP_SAMPLE_TITLE] ?? "") === next[i][EXP_SAMPLE_TITLE])) {
+    return 0;
+  }
+
   try {
-    // upsertRows does the whole batch in one render/validation pass. Older
-    // bundles only have the per-row call — fall back rather than fail.
-    if (dh.upsertRows) dh.upsertRows(EXP_KEY_TITLE, entries);
-    else entries.forEach((e) => dh.upsertRow(EXP_KEY_TITLE, e.key, e.values));
+    dh.loadExportJson({ ...current.exportObj, Container: { [current.cls]: next } });
   } catch { return 0; }
-  entries.forEach((e) => EXP_SYNCED.set(e.key, e.values[EXP_SAMPLE_TITLE]));
-  return entries.length;
+  return next.length;
 }
 
 /** Update button: sync regardless of the auto-sync toggle. */
