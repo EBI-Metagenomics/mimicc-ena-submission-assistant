@@ -384,7 +384,7 @@
     </div>
     <div class="vf-card vf-card--bordered panel maximizable" id="readsAssignPanel">
       <div class="panel-head">
-        <h2>2 · Pair samples to reads</h2>
+        <h2>2 · Pair reads and assign samples</h2>
         <button class="icon-btn maximize-toggle-btn" type="button" onclick="togglePanelMax('readsAssignPanel')" title="Maximize panel" aria-label="Maximize panel">⛶</button>
       </div>
       <div class="panel-body">
@@ -392,11 +392,20 @@
           <div><label class="vf-form__label">Default STUDY accession</label><input class="vf-form__input" id="defaultStudy" placeholder="PRJEB..."></div>
         </div>
         <div class="actions" style="margin-top:8px">
+          <button class="vf-button vf-button--secondary" type="button" id="pairSelectedBtn" onclick="pairSelectedRuns()"
+                  title="Merge the two ticked rows into one paired run (FASTQ1 + FASTQ2). Overrides whatever the filename scan guessed.">Pair selected reads</button>
+          <button class="vf-button vf-button--secondary" type="button" id="unpairSelectedBtn" onclick="unpairSelectedRuns()"
+                  title="Split the ticked paired rows back into one single-end run per file.">Unpair</button>
           <button class="vf-button vf-button--secondary" onclick="exportPairingsTsv()">Export pairings (TSV)</button>
           <label class="vf-button vf-button--secondary" style="display:inline-block; text-align:center; cursor:pointer">
             Import pairings (TSV)<input type="file" id="pairingsTsvFile" accept=".tsv,.txt" onchange="importPairingsTsv()" style="display:none">
           </label>
         </div>
+        <p class="muted" style="margin:6px 0 0">
+          One row is one run: tick two rows and press <strong>Pair selected reads</strong> to
+          make them one paired run, whatever the files are called. Two rows sharing a
+          <code>SAMPLE</code> stay two single-end runs.
+        </p>
         <div class="assign-grid" id="readsAssignGrid">
           <div class="assign-samples-pane">
             <!-- Criteria on the fetch, to narrow to the right cohort before

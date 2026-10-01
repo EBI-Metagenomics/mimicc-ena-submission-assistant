@@ -56,10 +56,68 @@ def test_group_files_mixed_paired_and_single():
     assert [g["paired"] for g in groups] == [False, True]
 
 
+@pytest.mark.parametrize(
+    ("names", "stem"),
+    [
+        # bcl2fastq / BCL Convert default: mate token followed by a chunk counter.
+        (["S1_S1_L001_R1_001.fastq.gz", "S1_S1_L001_R2_001.fastq.gz"], "S1_S1_L001"),
+        (["a_R1_001.fastq.gz", "a_R2_001.fastq.gz"], "a"),
+        (["b_1_001.fq.gz", "b_2_001.fq.gz"], "b"),
+        (["c_read1.fastq.gz", "c_read2.fastq.gz"], "c"),
+        # Illumina export: the mate token is followed by a word, not a number.
+        (["f_lane1A1_1_sequence.fq.gz", "f_lane1A1_2_sequence.fq.gz"], "f_lane1A1"),
+        (["g_1_sequence.txt.fastq.gz", "g_2_sequence.txt.fastq.gz"], "g"),
+        (["d.R1.fastq", "d.R2.fastq"], "d"),
+        (["e_r1.fastq.gz", "e_r2.fastq.gz"], "e"),
+    ],
+)
+def test_group_files_mate_token_variants_pair(names, stem):
+    groups = read_assign.group_files(names)
+    assert len(groups) == 1, [g["group"] for g in groups]
+    assert groups[0]["group"] == stem
+    assert groups[0]["paired"] is True
+    assert groups[0]["files_by_mate"] == {"1": names[0], "2": names[1]}
+
+
+def test_paired_group_yields_two_manifest_fastq_lines():
+    """A paired group must reach webin-cli as two FASTQ lines — that, not any
+    LIBRARY_LAYOUT field, is what makes the run PAIRED in ENA."""
+    group = read_assign.group_files(["s_S1_L001_R1_001.fastq.gz", "s_S1_L001_R2_001.fastq.gz"])[0]
+    assert group["paired"] is True
+    _, text = read_assign.build_manifest_text(
+        {
+            "STUDY": "PRJEB1",
+            "SAMPLE": "ERS1",
+            "NAME": "run1",
+            "PLATFORM": "ILLUMINA",
+            "INSTRUMENT": "Illumina MiSeq",
+            "LIBRARY_SOURCE": "METAGENOMIC",
+            "LIBRARY_SELECTION": "RANDOM",
+            "LIBRARY_STRATEGY": "WGS",
+            "FASTQ1": group["files_by_mate"]["1"],
+            "FASTQ2": group["files_by_mate"]["2"],
+        },
+        alias="run1",
+    )
+    assert [line for line in text.splitlines() if line.startswith("FASTQ\t")] == [
+        "FASTQ\ts_S1_L001_R1_001.fastq.gz",
+        "FASTQ\ts_S1_L001_R2_001.fastq.gz",
+    ]
+
+
 def test_group_files_half_a_pair_is_not_paired():
     groups = read_assign.group_files(["lonely_R1.fastq.gz"])
     assert groups[0]["paired"] is False
     assert groups[0]["files_by_mate"] == {"1": "lonely_R1.fastq.gz"}
+
+
+def test_group_files_mate_token_needs_a_partner_file():
+    """A digit that looks like a mate token but has no partner on disk must not
+    split the stem away from a *real* mate token further right."""
+    groups = read_assign.group_files(["lane1_2_1_sequence.fq.gz", "lane1_2_2_sequence.fq.gz"])
+    assert len(groups) == 1
+    assert groups[0]["group"] == "lane1_2"
+    assert groups[0]["paired"] is True
 
 
 def test_group_files_empty():
