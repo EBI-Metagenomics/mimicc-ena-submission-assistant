@@ -71,6 +71,40 @@ function py(target, kwargs = {}, files = {}) {
   });
 }
 
+// The submit panels' Stop button. Whatever submission is in flight registers
+// how to stop itself in STOP_SUBMISSION; the button just pulls that lever.
+let STOP_SUBMISSION = null;
+
+function stopSubmission() {
+  const stop = STOP_SUBMISSION;
+  STOP_SUBMISSION = null;
+  if (stop) stop();
+}
+
+/** Kill the Python worker. Pyodide runs Python synchronously, so this is the
+ *  only way to interrupt a submission mid-flight: every waiting call fails and
+ *  the next one starts a fresh worker. Whatever ENA already accepted stands —
+ *  "Refresh from ENA" shows what actually landed.
+ *  ponytail: no cooperative cancel, add one if Python ever needs to clean up. */
+function abortPy(reason = "Submission stopped.") {
+  const err = new Error(reason);
+  _pyPending.forEach((call) => call.reject(err));
+  _pyPending.clear();
+  if (_pyWorker) { _pyWorker.terminate(); _pyWorker = null; }
+}
+
+/** Await `work` until it finishes or the panel's Stop button is pressed. Used
+ *  for the one-shot submissions (studies, samples); the reads loop registers
+ *  its own stop because it has runs left to not start. */
+function untilStopped(stopBtnId, work) {
+  const btn = $(stopBtnId);
+  btn.disabled = false;
+  return new Promise((resolve, reject) => {
+    STOP_SUBMISSION = () => { abortPy(); reject(new Error("Submission stopped.")); };
+    work.then(resolve, reject);
+  }).finally(() => { STOP_SUBMISSION = null; btn.disabled = true; });
+}
+
 /** py() for a call that acts on ENA as the user: adds the Webin credentials
  *  and the test/production switch, and fails fast without credentials. */
 async function enaPy(target, kwargs = {}, files = {}) {

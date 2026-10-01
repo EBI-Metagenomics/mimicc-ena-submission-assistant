@@ -44,10 +44,10 @@ async function submitStudies() {
     banner("studyBanner", true, "Submitting prepared studies...");
     renderSubmissionLog("studyLog", { logs: clientLogs });
     window.__lastStudySubmitResponse = { accessions: [], logs: clientLogs };
-    const r = await enaPy("ena_service.submit_studies", {
+    const r = await untilStopped("studyStopBtn", enaPy("ena_service.submit_studies", {
       records, modify: $("studyModify").checked,
       hold_until: $("studyHold").value || null, public: $("studyPublic").checked,
-    }, servedFiles("/assets/ena_schema/ENA.project.xsd", "/assets/ena_schema/SRA.common.xsd"));
+    }, servedFiles("/assets/ena_schema/ENA.project.xsd", "/assets/ena_schema/SRA.common.xsd")));
     window.__lastStudySubmitResponse = r;
     banner(
       "studyBanner",
@@ -159,10 +159,10 @@ async function refreshSampleGrid() {
 
 async function submitSamples() {
   try {
-    const r = await enaPy("ena_service.submit_samples", {
+    const r = await untilStopped("sampleStopBtn", enaPy("ena_service.submit_samples", {
       records: window.__prepared || [], modify: $("sampleModify").checked,
       checklist: $("sampleChecklist").value || null, hold_until: $("sampleHold").value || null, public: $("samplePublic").checked,
-    }, servedFiles("/assets/ena_schema/SRA.sample.xsd", "/assets/ena_schema/SRA.common.xsd", "/schemas/mimicc_sample.yaml"));
+    }, servedFiles("/assets/ena_schema/SRA.sample.xsd", "/assets/ena_schema/SRA.common.xsd", "/schemas/mimicc_sample.yaml")));
     window.__lastSampleSubmitResponse = r;
     banner("sampleBanner", r.success, r.success ? `Submitted ${(r.accessions || []).length} sample(s).` : (r.error || "Submission failed."));
     renderSubmissionResult("sampleOut", r);

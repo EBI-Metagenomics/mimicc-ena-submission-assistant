@@ -268,6 +268,7 @@
       </div>
       <div class="actions">
         <button class="vf-button vf-button--primary" onclick="submitStudies()">Submit prepared studies</button>
+        <button class="vf-button vf-button--secondary" type="button" id="studyStopBtn" onclick="stopSubmission()" disabled>Stop</button>
         <button class="vf-button vf-button--secondary" onclick="refreshStudyGrid()">Refresh from ENA</button>
       </div>
       <div class="vf-banner vf-banner--alert" style="display:none" id="studyBanner"></div>
@@ -329,6 +330,7 @@
       </div>
       <div class="actions">
         <button class="vf-button vf-button--primary" id="sampleSubmitBtn" onclick="submitSamples()" disabled>Submit prepared samples</button>
+        <button class="vf-button vf-button--secondary" type="button" id="sampleStopBtn" onclick="stopSubmission()" disabled>Stop</button>
         <button class="vf-button vf-button--secondary" onclick="refreshSampleGrid()">Refresh from ENA</button>
       </div>
       <div class="vf-banner vf-banner--alert" style="display:none" id="sampleBanner"></div>
@@ -474,6 +476,7 @@
       <div class="actions">
         <button class="vf-button vf-button--primary helper-only" id="readsSubmitBtn" onclick="submitReads(true)" disabled>Submit reads to ENA</button>
         <button class="vf-button vf-button--secondary helper-only" id="readsValidateBtn" onclick="submitReads(false)" disabled>Validate only</button>
+        <button class="vf-button vf-button--secondary helper-only" type="button" id="readsStopBtn" onclick="stopSubmission()" disabled>Stop</button>
         <button class="vf-button vf-button--primary manual-only" id="readsScriptBtn" onclick="generateReadsScript(true)" disabled>Generate submit command</button>
         <button class="vf-button vf-button--secondary manual-only" id="readsScriptValidateBtn" onclick="generateReadsScript(false)" disabled>Generate validate-only command</button>
         <label class="inline" style="align-self:center"><input type="checkbox" id="forceReupload"><span class="muted">force re-upload all (ignore "already in ENA")</span></label>

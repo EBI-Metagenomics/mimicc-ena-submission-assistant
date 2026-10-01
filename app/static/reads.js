@@ -757,12 +757,28 @@ async function submitReads(doSubmit) {
   const dir = readsLocalDir();
   if (!dir) { banner("submitReadsBanner", false, "Set your local reads directory in step 1."); return; }
 
+  // Stop ends the batch: no further runs are started, and the upload now
+  // streaming is abandoned (see READS_ABORT_UPLOAD).
+  let stopRequested = false;
+  const stopBtn = $("readsStopBtn");
+  stopBtn.disabled = false;
+  STOP_SUBMISSION = () => {
+    stopRequested = true;
+    appendReadsLog("STOP requested.");
+    if (READS_ABORT_UPLOAD) READS_ABORT_UPLOAD();
+    else abortPy("Submission stopped.");
+  };
+
   try {
     const { plan, warnings } = await readsPlan(runs);
     (warnings || []).forEach((w) => appendReadsLog("WARNING: " + w));
 
     const results = [];
     for (const entry of plan) {
+      if (stopRequested) {
+        appendReadsLog(`=== stopped: ${plan.length - results.length} run(s) not submitted`);
+        break;
+      }
       if (entry.action === "skip") {
         appendReadsLog(`=== ${entry.name} === SKIP (${entry.reason})`);
         results.push(entry);
@@ -776,16 +792,18 @@ async function submitReads(doSubmit) {
       renderRunTable();
     }
 
-    const ok = results.every((r) => r.success !== false);
+    const ok = !stopRequested && results.every((r) => r.success !== false);
     const skipped = results.filter((r) => r.skipped).length;
     banner("submitReadsBanner", ok,
-      ok ? `Done: ${results.length} run(s)${skipped ? `, ${skipped} skipped` : ""}${doSubmit ? "" : " (validate only)"}.`
+      stopRequested ? `Stopped after ${results.length} run(s) — click Submit to resume.`
+      : ok ? `Done: ${results.length} run(s)${skipped ? `, ${skipped} skipped` : ""}${doSubmit ? "" : " (validate only)"}.`
          : "Some runs failed — see results.");
     renderTable("readsResults", results);
     await refreshReadsGrid(results);
     renderRunTable();
     saveWorkspaceNow();
   } catch (e) { banner("submitReadsBanner", false, e.message); }
+  finally { STOP_SUBMISSION = null; stopBtn.disabled = true; }
 }
 
 /** The run accessions this workspace put in ENA: what the last batch returned,
@@ -823,9 +841,16 @@ function readsPlan(runs) {
   });
 }
 
+// How to abandon the upload currently streaming, while one is. The helper has
+// no cancel API, so Stop stops *waiting* — webin-cli may still finish the file
+// it is on; the resume ledger and ENA's alias check sort that out next time.
+// ponytail: add a real kill once the helper grows DELETE /api/submit.
+let READS_ABORT_UPLOAD = null;
+
 // Run one upload on the local helper and turn the outcome into a result row.
 function uploadOneViaHelper(entry, inputDir, doSubmit) {
-  return new Promise(async (resolve) => {
+  return new Promise(async (rawResolve) => {
+    const resolve = (r) => { READS_ABORT_UPLOAD = null; rawResolve(r); };
     let job;
     try {
       job = await helperApi("/api/submit", { method: "POST", body: JSON.stringify({
@@ -838,6 +863,13 @@ function uploadOneViaHelper(entry, inputDir, doSubmit) {
       return;
     }
     const es = new EventSource(`${HELPER_BASE}/api/stream/${job.job_id}`);
+    READS_ABORT_UPLOAD = () => {
+      es.close();
+      appendReadsLog(`=== ${entry.name} === STOPPED (webin-cli may still be finishing in the helper; `
+        + `the next Submit skips this run if it reached ENA)`);
+      resolve({ name: entry.name, alias: entry.alias, sample: entry.sample, study: entry.study,
+        success: false, stopped: true, exit_code: 1 });
+    };
     es.onmessage = async (ev) => {
       const m = JSON.parse(ev.data);
       if (m.line != null) appendReadsLog(m.line);
@@ -868,7 +900,7 @@ function uploadOneViaHelper(entry, inputDir, doSubmit) {
 }
 
 function recordLedger(r) {
-  if (!r || !r.name) return;
+  if (!r || !r.name || r.stopped) return;
   READS_RUNS[r.name] = {
     run_name: r.name,
     status: r.skipped ? (r.reason === "already_in_ena" ? "already_in_ena" : "done")
