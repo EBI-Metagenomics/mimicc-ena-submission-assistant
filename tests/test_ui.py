@@ -1003,20 +1003,33 @@ def test_confirmation_grids_explain_when_nothing_was_submitted(page):
 
 
 def _inject_fake_experiment_dh(page, rows):
-    """Stand in for a loaded experiment DataHarmonizer grid: the real second
-    template isn't built in this (non-Docker) test environment, but the merge
-    logic only ever talks to window.dataHarmonizer.getExportJson(), so a
-    minimal fake covering that one call is enough to test it."""
+    """Stand in for a loaded experiment DataHarmonizer grid holding ``rows``:
+    the real second template isn't built in this (non-Docker) test
+    environment, but the submit-time merge and the pairing sync only ever talk
+    to getExportJson()/loadExportJson(), so a fake holding the rows in
+    ``window.__rows`` — and recording each whole-grid replace in
+    ``window.__loads`` — is enough to test both."""
     page.evaluate(
         """(rows) => {
             const frame = document.getElementById('expDhFrame');
+            window.__rows = rows;
+            window.__loads = [];
             frame.contentWindow.dataHarmonizer = {
                 ready: true,
-                getExportJson: () => ({ Container: { MIMICC_Experiment: rows } }),
+                getExportJson: () => ({ Container: { MIMICC_Experiment: window.__rows } }),
+                loadExportJson: (obj) => {
+                    window.__rows = obj.Container.MIMICC_Experiment;
+                    window.__loads.push(window.__rows);
+                },
             };
+            EXP_DEFAULTS = null;
         }""",
         rows,
     )
+
+
+def _exp_rows(page):
+    return page.evaluate("() => window.__rows")
 
 
 def test_reads_submit_merges_experiment_metadata(page):
@@ -1293,57 +1306,9 @@ def test_reads_submit_blocks_without_matching_experiment_row(page):
     assert "No experiment metadata row found" in page.inner_text("#submitReadsBanner")
 
 
-def _inject_recording_experiment_dh(page, batched=True):
-    """A fake experiment grid that records the upsert calls the sync makes, so
-    it can be asserted on those rather than on grid contents. ``batched=False``
-    stands in for a DataHarmonizer bundle predating upsertRows."""
-    page.evaluate(
-        """(batched) => {
-            const frame = document.getElementById('expDhFrame');
-            window.__upserts = [];
-            window.__batches = [];
-            const dh = {
-                ready: true,
-                getExportJson: () => ({ Container: { MIMICC_Experiment: [] } }),
-                upsertRow: (keyCol, key, patch) => window.__upserts.push([key, patch]),
-            };
-            if (batched) {
-                dh.upsertRows = (keyCol, entries) => {
-                    window.__batches.push(entries);
-                    entries.forEach((e) => window.__upserts.push([e.key, e.values]));
-                };
-            }
-            frame.contentWindow.dataHarmonizer = dh;
-            EXP_SYNCED.clear();
-        }""",
-        batched,
-    )
-
-
-def test_experiment_sync_sends_one_batched_upsert(page):
-    """Every changed row goes over in a single upsertRows call — the batched
-    form does one render/validation pass instead of one per row."""
-    page.click("a.vf-tabs__link:has-text('Reads')")
-    page.evaluate(
-        """() => {
-            RUN_ROWS = [
-                { NAME: "r1", files: [], paired: false, SAMPLE: "ERS1", STUDY: "" },
-                { NAME: "r2", files: [], paired: false, SAMPLE: "ERS2", STUDY: "" },
-                { NAME: "r3", files: [], paired: false, SAMPLE: "ERS3", STUDY: "" },
-            ];
-        }"""
-    )
-    _inject_recording_experiment_dh(page)
-    page.evaluate("() => syncPairingsToExperimentDhNow()")
-
-    batches = page.evaluate("() => window.__batches")
-    assert len(batches) == 1
-    assert [e["key"] for e in batches[0]] == ["r1", "r2", "r3"]
-    assert batches[0][0]["values"] == {"Sample alias": "ERS1"}
-
-
-def test_experiment_sync_falls_back_to_per_row_upsert(page):
-    """An older bundle without upsertRows must still sync, one row at a time."""
+def test_experiment_grid_is_a_projection_of_the_pairings(page):
+    """One row per run, in pairing order, starting from the schema defaults the
+    fresh grid's unnamed rows carry — and no blank rows above them."""
     page.click("a.vf-tabs__link:has-text('Reads')")
     page.evaluate(
         """() => {
@@ -1353,54 +1318,94 @@ def test_experiment_sync_falls_back_to_per_row_upsert(page):
             ];
         }"""
     )
-    _inject_recording_experiment_dh(page, batched=False)
-    page.evaluate("() => syncPairingsToExperimentDhNow()")
+    _inject_fake_experiment_dh(page, [{"Platform": "ILLUMINA"}, {"Platform": "ILLUMINA"}])
+    assert page.evaluate("() => syncPairingsToExperimentDhNow()") == 2
 
-    assert page.evaluate("() => window.__batches") == []
-    assert page.evaluate("() => window.__upserts.map((u) => u[0])") == ["r1", "r2"]
+    assert _exp_rows(page) == [
+        {"Platform": "ILLUMINA", "Experiment name": "r1", "Sample alias": "ERS1"},
+        {"Platform": "ILLUMINA", "Experiment name": "r2", "Sample alias": "ERS2"},
+    ]
 
 
-def test_experiment_sync_only_pushes_changed_pairings(page):
-    """Re-pushing every row on every edit is what made the grid crawl."""
+def test_experiment_grid_keeps_one_row_per_paired_run(page):
+    """Pairing two mates into one run leaves ONE experiment row — the rows of
+    the single-end runs it was merged from must not linger."""
     page.click("a.vf-tabs__link:has-text('Reads')")
     page.evaluate(
         """() => {
             RUN_ROWS = [
-                { NAME: "r1", files: [], paired: false, SAMPLE: "ERS1", STUDY: "ERP1" },
-                { NAME: "r2", files: [], paired: false, SAMPLE: "ERS2", STUDY: "ERP1" },
+                { NAME: "s_1", files: ["s_1.fastq.gz"], paired: false, FASTQ: "s_1.fastq.gz", SAMPLE: "ERS1", STUDY: "" },
+                { NAME: "s_2", files: ["s_2.fastq.gz"], paired: false, FASTQ: "s_2.fastq.gz", SAMPLE: "ERS1", STUDY: "" },
             ];
         }"""
     )
-    _inject_recording_experiment_dh(page)
-
+    _inject_fake_experiment_dh(page, [{}])
     page.evaluate("() => syncPairingsToExperimentDhNow()")
-    assert page.evaluate("() => window.__upserts.map((u) => u[0])") == ["r1", "r2"]
+    assert [r["Experiment name"] for r in _exp_rows(page)] == ["s_1", "s_2"]
 
-    # Nothing changed — no work at all.
+    # Hand-fill something on one of them, then pair the two mates.
+    page.evaluate("""() => { window.__rows[0].Platform = 'ILLUMINA'; }""")
+    page.evaluate(
+        """() => {
+            RUN_ROWS = [pairedRow(RUN_ROWS[0], RUN_ROWS[1], "s_1.fastq.gz", "s_2.fastq.gz")];
+            syncPairingsToExperimentDhNow();
+        }"""
+    )
+    assert [r["Experiment name"] for r in _exp_rows(page)] == ["s"]
+    assert _exp_rows(page)[0]["Sample alias"] == "ERS1"
+
+
+def test_experiment_grid_carries_over_manual_edits(page):
+    """Re-projecting keeps whatever the user typed into a run's row."""
+    page.click("a.vf-tabs__link:has-text('Reads')")
+    page.evaluate(
+        """() => {
+            RUN_ROWS = [{ NAME: "r1", files: [], paired: false, SAMPLE: "ERS1", STUDY: "" }];
+        }"""
+    )
+    _inject_fake_experiment_dh(page, [{}])
     page.evaluate("() => syncPairingsToExperimentDhNow()")
-    assert page.evaluate("() => window.__upserts.length") == 2
+    page.evaluate("""() => { window.__rows[0]['Library name'] = 'lib-A'; }""")
 
-    # One pairing changed — exactly one push.
-    page.evaluate("() => { RUN_ROWS[1].SAMPLE = 'ERS9'; syncPairingsToExperimentDhNow(); }")
-    assert page.evaluate("() => window.__upserts.slice(2)") == [["r2", {"Sample alias": "ERS9"}]]
+    page.evaluate("() => { RUN_ROWS[0].SAMPLE = 'ERS9'; syncPairingsToExperimentDhNow(); }")
+    assert _exp_rows(page) == [
+        {"Experiment name": "r1", "Sample alias": "ERS9", "Library name": "lib-A"},
+    ]
+
+
+def test_experiment_sync_is_a_noop_when_already_projected(page):
+    """Reloading the grid loses the user's selection and in-flight edit, so an
+    unchanged pairing table must not touch it."""
+    page.click("a.vf-tabs__link:has-text('Reads')")
+    page.evaluate(
+        """() => {
+            RUN_ROWS = [{ NAME: "r1", files: [], paired: false, SAMPLE: "ERS1", STUDY: "" }];
+        }"""
+    )
+    _inject_fake_experiment_dh(page, [{}])
+    page.evaluate("() => syncPairingsToExperimentDhNow()")
+    assert page.evaluate("() => window.__loads.length") == 1
+
+    assert page.evaluate("() => syncPairingsToExperimentDhNow()") == 0
+    assert page.evaluate("() => window.__loads.length") == 1
 
 
 def test_experiment_sync_toggle_and_update_button(page):
     page.click("a.vf-tabs__link:has-text('Reads')")
     page.evaluate("""() => { RUN_ROWS = [{ NAME: "r1", files: [], paired: false, SAMPLE: "ERS1", STUDY: "" }]; }""")
-    _inject_recording_experiment_dh(page)
+    _inject_fake_experiment_dh(page, [{}])
 
     page.uncheck("#expDhAutoSync")
     page.evaluate("() => syncPairingsToExperimentDh()")
     page.wait_for_timeout(300)
-    assert page.evaluate("() => window.__upserts.length") == 0
+    assert page.evaluate("() => window.__loads.length") == 0
 
     page.click("#expDhUpdateBtn")
-    assert page.evaluate("() => window.__upserts") == [["r1", {"Sample alias": "ERS1"}]]
+    assert _exp_rows(page) == [{"Experiment name": "r1", "Sample alias": "ERS1"}]
 
     page.check("#expDhAutoSync")
     page.evaluate("() => { RUN_ROWS[0].SAMPLE = 'ERS2'; syncPairingsToExperimentDh(); }")
-    page.wait_for_function("() => window.__upserts.length === 2")
+    page.wait_for_function("() => window.__loads.length === 2")
 
 
 def test_experiment_auto_sync_toggle_persists_in_the_workspace(page):

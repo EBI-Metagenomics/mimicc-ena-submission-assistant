@@ -303,12 +303,17 @@ in practice both files now exist permanently.
   | DESCRIPTION (optional) | `Description` |
 
   Use your schema's own `ifabsent` defaults for PLATFORM/INSTRUMENT/etc. (replacing the removed
-  hardcoded "library preset" dropdown) — new rows added by the sync below pick those up
-  automatically (`addRows()`'s normal default-population behaviour).
-- **How sync works**: whenever the Reads tab's pairing table changes (scan, auto-assign, manual
-  edit, TSV import), each pairing row's NAME/SAMPLE is upserted into the experiment grid by `NAME`
-  — only those two columns are touched, so anything already filled in (manually, or via a default)
-  on that row is preserved. At submit time, each pairing row is merged with its matching experiment
+  hardcoded "library preset" dropdown) — rows the sync below creates start from those defaults.
+- **How sync works**: the experiment grid is a **projection of the pairing table** — one row per
+  run, in pairing-table order, starting at row 0. Whenever the pairing table changes (scan,
+  auto-assign, manual edit, TSV import, pair/unpair), the grid is rebuilt from it via
+  `loadExportJson`: a paired run is one run, so it gets **one** experiment row, and the rows of
+  runs that no longer exist (e.g. the two single-end rows a pair was merged from) go away.
+  Anything already filled in for a run (manually, or via a default) is carried over by `NAME`, and
+  a run with no row yet starts from the schema's `ifabsent` defaults — read off an unnamed row of
+  the freshly loaded grid, since `loadData()` does not re-run DataHarmonizer's default population.
+  A grid that already matches the pairing table is left alone, so a sync can't interrupt an edit
+  in progress. At submit time, each pairing row is merged with its matching experiment
   row (by NAME) to build the webin-cli manifest; a row with no experiment-grid match, or an
   experiment grid that isn't built/ready, blocks submission with a clear error rather than sending
   an incomplete manifest.
