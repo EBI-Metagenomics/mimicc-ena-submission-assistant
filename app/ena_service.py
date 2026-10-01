@@ -572,7 +572,35 @@ def run_action(
     """Run a single submission action against an accession.
 
     ``records.record_action`` with this app's argument order, and its messages
-    flattened to one string — which is what the page renders.
+    flattened to one string — which is what the page renders. ``receipt_success``
+    keeps ENA's own flag; see :func:`_action_applied` for why ``success`` can
+    differ from it.
     """
     result = _records().record_action(creds, accession, action, test=test, hold_until=hold_until, alias=alias)
-    return {**result, "messages": "; ".join(result["messages"])}
+    messages: list[str] = result["messages"]
+    return {
+        **result,
+        "success": _action_applied(bool(result["success"]), messages),
+        "receipt_success": bool(result["success"]),
+        "messages": "; ".join(messages),
+    }
+
+
+def _action_applied(receipt_success: bool, messages: list[str]) -> bool:
+    """Whether a lifecycle action actually took effect.
+
+    ENA's receipt for a CANCEL comes back ``success="false"`` even when the
+    cancel was applied, with the outcome stated only in the INFO lines::
+
+        INFO: EXPERIMENT accession "ERX17126444" is set to cancelled status.
+        INFO: RUN accession "ERR17735909" is set to cancelled status.
+
+    Reporting that as a failure is worse than cosmetic: the page keeps showing
+    the record's old status, so the user retries an action that already worked.
+    The flag is overridden only when ENA said something AND every line is INFO
+    — an empty receipt, a WARNING or an ERROR is still a failure, which is why
+    a warning-only submission rejection (see ``submit_studies``) is untouched.
+    """
+    if receipt_success:
+        return True
+    return bool(messages) and all(m.startswith("INFO:") for m in messages)

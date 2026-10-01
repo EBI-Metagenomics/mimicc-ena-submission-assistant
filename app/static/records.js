@@ -432,10 +432,17 @@ async function recAction(action, accession) {
     const r = await enaPy("ena_service.run_action", { action, accession, hold_until: hold });
     const detail = r.messages || "";
     appendLog("recLog", `${action} ${accession}: ${r.success ? "ok" : "failed"} — ${detail}`);
+    // ENA's CANCEL receipt carries success="false" even when it applied, so
+    // ena_service decides from the messages and keeps the raw flag; say so in
+    // the log rather than leaving the disagreement invisible.
+    const lines = [[r.success ? "" : "bad", detail || (r.success ? "ENA returned no messages." : "ENA rejected it")]];
+    if (r.success && r.receipt_success === false) {
+      lines.push(["warn", "ENA's receipt flag said failure, but it reported only the INFO lines above — taken as applied."]);
+    }
     logEntry({
       title: `${accession} · ${action.toUpperCase()} ${envLabel()} · ${r.success ? "accepted" : "REJECTED"}`,
       ok: r.success,
-      lines: [[r.success ? "" : "bad", detail || (r.success ? "ENA returned no messages." : "ENA rejected it")]],
+      lines,
     });
     banner("recBanner", r.success, `${action} ${accession}: ${r.success ? "ok" : "failed"} — ${detail}`);
     // The status column is how the user sees it worked.
