@@ -76,8 +76,9 @@ _DEFAULT_PY = {
 def _stub_py(page, responses):
     """Replace py() — the page's call into Python — with canned answers keyed by
     target (on top of ``_DEFAULT_PY``), recording each call in
-    ``window.__pyCalls``. ``{"__error": msg}`` rejects; ``{"__by_entity": {...}}``
-    answers by the call's ``entity``. The real worker is covered by the Pyodide
+    ``window.__pyCalls``. ``{"__error": msg}`` rejects; ``{"__hang": True}``
+    never settles (for the Stop buttons); ``{"__by_entity": {...}}`` answers by
+    the call's ``entity``. The real worker is covered by the Pyodide
     tests at the end of this file."""
     page.evaluate(
         """(responses) => {
@@ -87,6 +88,7 @@ def _stub_py(page, responses):
                 if (!(target in responses)) throw new Error('unstubbed py(): ' + target);
                 const answer = responses[target];
                 if (answer && answer.__error) throw new Error(answer.__error);
+                if (answer && answer.__hang) return new Promise(() => {});
                 if (answer && answer.__by_entity) return answer.__by_entity[kwargs.entity] || [];
                 return answer;
             };
@@ -1846,3 +1848,99 @@ def test_python_builds_and_compiles_schemas_in_a_browser_worker(page, pyodide_re
     assert "slots:" in built
     assert compiled["template"] == "mimicc/MIMICC_Sample"
     assert "MIMICC_Sample" in compiled["schema_json"]["classes"]
+
+
+# ---------------------------------------------------------------------------
+# Stop buttons on the three submit panels
+# ---------------------------------------------------------------------------
+# A stopped submission is reported as a failure and leaves nothing half-recorded;
+# what ENA already accepted comes back via "Refresh from ENA".
+
+
+def test_stop_ends_a_study_submission(page):
+    _stub_py(page, {"ena_service.submit_studies": {"__hang": True}})
+    page.click("a.vf-tabs__link:has-text('Studies')")
+    page.evaluate(
+        """() => { CREDS = { username: 'Webin-test', password: 'secret' };
+                   window.__preparedStudies = [{ alias: 'studyA', TITLE: 'A' }];
+                   submitStudies(); }"""
+    )
+    page.wait_for_function("() => !document.getElementById('studyStopBtn').disabled")
+    page.click("#studyStopBtn")
+    page.wait_for_function("() => document.getElementById('studyBanner').innerText.includes('Submission stopped')")
+    assert "ERROR: Submission stopped." in page.inner_text("#studyLog")
+    assert page.is_disabled("#studyStopBtn")
+
+
+def test_stop_ends_a_sample_submission(page):
+    _stub_py(page, {"ena_service.submit_samples": {"__hang": True}})
+    page.click("a.vf-tabs__link:has-text('Samples')")
+    page.evaluate(
+        """() => { CREDS = { username: 'Webin-test', password: 'secret' };
+                   window.__prepared = [{ alias: 'sampleA' }];
+                   submitSamples(); }"""
+    )
+    page.wait_for_function("() => !document.getElementById('sampleStopBtn').disabled")
+    page.click("#sampleStopBtn")
+    page.wait_for_function("() => document.getElementById('sampleBanner').innerText.includes('Submission stopped')")
+    assert page.is_disabled("#sampleStopBtn")
+
+
+def _stub_never_ending_helper_upload(page):
+    """Make the local helper accept a job whose log stream never ends, so a reads
+    upload sits in flight for the Stop button to abandon."""
+    page.evaluate(
+        """() => {
+            window.__helperJobs = 0;
+            helperApi = async () => { window.__helperJobs += 1; return { job_id: 'job1' }; };
+            window.EventSource = class { constructor() { window.__esOpen = (window.__esOpen || 0) + 1; }
+                                        close() { window.__esClosed = (window.__esClosed || 0) + 1; } };
+        }"""
+    )
+
+
+def test_stop_abandons_the_running_read_upload_and_skips_the_rest(page):
+    entry = {
+        "action": "upload",
+        "name": "runA",
+        "alias": "p_runA",
+        "stable_alias": "runA",
+        "sample": "ERS111",
+        "study": "ERP111",
+        "manifest_filename": "runA.manifest",
+        "manifest_text": "NAME runA",
+    }
+    second = {**entry, "name": "runB", "alias": "p_runB", "stable_alias": "runB", "manifest_filename": "runB.manifest"}
+    _stub_py(page, {"ena_service.plan_reads": {"plan": [entry, second], "warnings": []}})
+    _stub_never_ending_helper_upload(page)
+    page.click("a.vf-tabs__link:has-text('Reads')")
+    page.evaluate(
+        """() => { HELPER_OK = true; CREDS = { username: 'Webin-test', password: 'secret' };
+                   READS_RUNS = {};
+                   document.getElementById('readsLocalDir').value = '/tmp/reads';
+                   RUN_ROWS = [{ NAME: 'runA', SAMPLE: 'ERS111', STUDY: 'ERP111', paired: false,
+                                 FASTQ: 'runA.fastq.gz' },
+                               { NAME: 'runB', SAMPLE: 'ERS111', STUDY: 'ERP111', paired: false,
+                                 FASTQ: 'runB.fastq.gz' }]; }"""
+    )
+    _inject_fake_experiment_dh(
+        page,
+        [{"Experiment name": "runA", "Sample alias": "ERS111"}, {"Experiment name": "runB", "Sample alias": "ERS111"}],
+    )
+    # Not `() => submitReads(true)`: Playwright awaits a returned promise, and
+    # this batch deliberately never finishes on its own.
+    page.evaluate("() => { submitReads(true); }")
+    page.wait_for_function("() => window.__esOpen === 1")
+    assert not page.is_disabled("#readsStopBtn")
+
+    page.click("#readsStopBtn")
+    page.wait_for_function("() => document.getElementById('submitReadsBanner').innerText.includes('Stopped after')")
+    log = page.inner_text("#readsLog")
+    assert "runA === STOPPED" in log
+    assert "1 run(s) not submitted" in log
+    # runB never started, and the abandoned runA is not ledgered — so clicking
+    # Submit again retries it.
+    assert page.evaluate("() => window.__helperJobs") == 1
+    assert page.evaluate("() => Object.keys(READS_RUNS)") == []
+    assert page.evaluate("() => window.__esClosed") == 1
+    assert page.is_disabled("#readsStopBtn")
