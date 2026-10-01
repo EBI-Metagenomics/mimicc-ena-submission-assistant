@@ -390,8 +390,15 @@
       <div class="panel-body">
         <div class="row">
           <div><label class="vf-form__label">Default STUDY accession</label><input class="vf-form__input" id="defaultStudy" placeholder="PRJEB..."></div>
+          <div><label class="vf-form__label" for="pairRegex">Auto-pair pattern</label><input class="vf-form__input" id="pairRegex"
+               placeholder="^(.*)_([12])\.f(?:ast)?q(?:\.gz)?$"
+               title="Regex over the file name: group 1 is the stem both mates share, group 2 is the mate number."></div>
         </div>
         <div class="actions" style="margin-top:8px">
+          <button class="vf-button vf-button--secondary" type="button" id="autoPairBtn" onclick="autoPairRuns()"
+                  title="Merge every pair of single-end rows whose file names match the Auto-pair pattern.">Auto-pair</button>
+          <button class="vf-button vf-button--secondary" type="button" id="unpairAllBtn" onclick="unpairAllRuns()"
+                  title="Split every paired row back into one single-end run per file.">Unpair all</button>
           <button class="vf-button vf-button--secondary" type="button" id="pairSelectedBtn" onclick="pairSelectedRuns()"
                   title="Merge the two ticked rows into one paired run (FASTQ1 + FASTQ2). Overrides whatever the filename scan guessed.">Pair selected reads</button>
           <button class="vf-button vf-button--secondary" type="button" id="unpairSelectedBtn" onclick="unpairSelectedRuns()"
