@@ -327,8 +327,10 @@ def test_reads_pairing_splitter_resizes_full_height_grid(page):
     grid_box = grid.bounding_box()
     workspace_box = page.locator("#readsAssignGrid").bounding_box()
     # The sample browser consumes the left pane's available height rather than
-    # keeping its old fixed height when the panel is maximized.
-    assert grid_box["height"] > 250
+    # keeping its old fixed height when the panel is maximized. The floor is
+    # generous because at this viewport the panel's button row wraps to two
+    # lines; what matters is the fill, asserted against the pane below.
+    assert grid_box["height"] > 150
     assert workspace_box["y"] + workspace_box["height"] - (grid_box["y"] + grid_box["height"]) < 2
     row_viewport = page.locator("#pairSamples .ht_master .wtHolder").first.bounding_box()
     assert row_viewport["height"] > grid_box["height"] - 120
@@ -489,6 +491,69 @@ def test_reads_unpair_splits_a_paired_run_back(page):
         ["runA_2", False, "runA_R2.fastq.gz"],
     ]
     assert page.evaluate("() => RUN_ROWS.every(r => r.SAMPLE === 'ERS111')") is True
+
+
+_SCANNED_MATES = r"""() => {
+    RUN_ROWS = ["sampA_1.fq.gz", "sampA_2.fq.gz", "sampB_1.fq.gz", "sampB_2.fq.gz",
+                "orphan.fq.gz"].map((f) => ({
+        NAME: f.replace(/\.fq\.gz$/, ""), files: [f], paired: false,
+        FASTQ1: "", FASTQ2: "", FASTQ: f, SAMPLE: "", STUDY: "ERP1", confidence: "none"
+    }));
+    renderRunTable();
+}"""
+
+
+def test_reads_auto_pair_merges_every_mate_pair_by_the_default_pattern(page):
+    """The default pattern pairs _1/_2 files: two pairs out of four mates, with
+    the unmatched file left as its own single-end run."""
+    page.click("a.vf-tabs__link:has-text('Reads')")
+    page.evaluate(_SCANNED_MATES)
+    page.click("#autoPairBtn")
+
+    assert page.evaluate("() => RUN_ROWS.map(r => [r.NAME, r.paired, r.FASTQ1, r.FASTQ2, r.FASTQ])") == [
+        ["sampA", True, "sampA_1.fq.gz", "sampA_2.fq.gz", ""],
+        ["sampB", True, "sampB_1.fq.gz", "sampB_2.fq.gz", ""],
+        ["orphan", False, "", "", "orphan.fq.gz"],
+    ]
+    assert page.locator("#runTable tbody tr").count() == 3
+
+
+def test_reads_auto_pair_uses_the_regex_the_user_typed(page):
+    """Filenames the default misses are the whole point of the box: the pattern
+    says which part is the shared stem and which is the mate number."""
+    page.click("a.vf-tabs__link:has-text('Reads')")
+    page.evaluate(_SCANNED_SINGLES)
+    page.fill("#pairRegex", r"^(.*)_([12])_sequence\.fq\.gz$")
+    page.click("#autoPairBtn")
+
+    assert page.evaluate("() => RUN_ROWS.length") == 1
+    assert page.evaluate("() => [RUN_ROWS[0].NAME, RUN_ROWS[0].paired]") == ["lane1A1", True]
+    # One paired run is two files against the sample, not two runs.
+    assert page.evaluate("() => sampleAssignmentCount('ERS111')") == 2
+
+
+def test_reads_auto_pair_rejects_a_broken_regex(page):
+    page.click("a.vf-tabs__link:has-text('Reads')")
+    page.evaluate(_SCANNED_MATES)
+    page.fill("#pairRegex", "^(unclosed")
+    page.click("#autoPairBtn")
+    assert page.evaluate("() => RUN_ROWS.every(r => !r.paired)") is True
+    assert "not a valid regex" in page.inner_text("#readsBanner")
+
+
+def test_reads_unpair_all_splits_every_paired_run(page):
+    page.click("a.vf-tabs__link:has-text('Reads')")
+    page.evaluate(_SCANNED_MATES)
+    page.click("#autoPairBtn")
+    page.click("#unpairAllBtn")
+
+    assert page.evaluate("() => RUN_ROWS.map(r => [r.FASTQ, r.paired])") == [
+        ["sampA_1.fq.gz", False],
+        ["sampA_2.fq.gz", False],
+        ["sampB_1.fq.gz", False],
+        ["sampB_2.fq.gz", False],
+        ["orphan.fq.gz", False],
+    ]
 
 
 def test_reads_pairings_tsv_import_is_authoritative(page, tmp_path):

@@ -396,6 +396,62 @@ function readFileOf(row) {
   return row.FASTQ || row.FASTQ1 || (row.files || [])[0] || "";
 }
 
+/** One run row from two mates. The pair's SAMPLE/STUDY is whichever mate has
+ *  one — mates are one run, so there is nothing to merge. */
+function pairedRow(a, b, f1, f2) {
+  return {
+    NAME: commonRunName(a.NAME || "", b.NAME || ""),
+    paired: true, FASTQ1: f1, FASTQ2: f2, FASTQ: "", files: [f1, f2],
+    SAMPLE: a.SAMPLE || b.SAMPLE || "", STUDY: a.STUDY || b.STUDY || "",
+    confidence: "manual", suggested_alias: "",
+    reupload: !!(a.reupload || b.reupload),
+  };
+}
+
+// Auto-pairing is a convenience over the manual decision above, not a return to
+// filename guesswork: the user supplies the pattern, sees every row it merged,
+// and can still pair/unpair by hand afterwards. Group 1 is the stem shared by
+// the two mates, group 2 is the mate number (1 or 2).
+const DEFAULT_PAIR_REGEX = "^(.*)_([12])\\.f(?:ast)?q(?:\\.gz)?$";
+
+function autoPairRuns() {
+  const source = ($("pairRegex").value || "").trim() || DEFAULT_PAIR_REGEX;
+  let re;
+  try { re = new RegExp(source); }
+  catch (e) { banner("readsBanner", false, `That is not a valid regex: ${e.message}`); return; }
+
+  // stem -> {"1": rowIndex, "2": rowIndex}; first match per mate wins, so a
+  // third file claiming a taken slot is simply left as its own single-end run.
+  const stems = new Map();
+  RUN_ROWS.forEach((row, i) => {
+    if (row.paired) return;
+    const name = readFileOf(row).split("/").pop();
+    const m = name && re.exec(name);
+    if (!m || !m[1] || (m[2] !== "1" && m[2] !== "2")) return;
+    const slot = stems.get(m[1]) || {};
+    if (slot[m[2]] === undefined) slot[m[2]] = i;
+    stems.set(m[1], slot);
+  });
+
+  const drop = new Set();
+  let paired = 0;
+  stems.forEach((slot) => {
+    if (slot["1"] === undefined || slot["2"] === undefined) return;
+    const [a, b] = [RUN_ROWS[slot["1"]], RUN_ROWS[slot["2"]]];
+    const keep = Math.min(slot["1"], slot["2"]);
+    RUN_ROWS[keep] = pairedRow(a, b, readFileOf(a), readFileOf(b));
+    drop.add(Math.max(slot["1"], slot["2"]));
+    paired++;
+  });
+  if (!paired) { banner("readsBanner", false, `No rows matched ${source} as a mate pair.`); return; }
+  RUN_ROWS = RUN_ROWS.filter((_, i) => !drop.has(i));
+  renderRunTable();
+  refreshAssignedCounts();
+  syncPairingsToExperimentDh();
+  scheduleSave();
+  banner("readsBanner", true, `Auto-paired ${paired} run(s) with ${source}.`);
+}
+
 function pairSelectedRuns() {
   const picked = selectedRunIndices();
   if (picked.length !== 2) {
@@ -417,13 +473,7 @@ function pairSelectedRuns() {
   // dropping one of two different assignments.
   const clash = a.SAMPLE && b.SAMPLE && a.SAMPLE !== b.SAMPLE;
   RUN_ROWS.splice(j, 1);
-  RUN_ROWS[i] = {
-    NAME: commonRunName(a.NAME || "", b.NAME || ""),
-    paired: true, FASTQ1: f1, FASTQ2: f2, FASTQ: "", files: [f1, f2],
-    SAMPLE: a.SAMPLE || b.SAMPLE || "", STUDY: a.STUDY || b.STUDY || "",
-    confidence: "manual", suggested_alias: "",
-    reupload: !!(a.reupload || b.reupload),
-  };
+  RUN_ROWS[i] = pairedRow(a, b, f1, f2);
   renderRunTable();
   refreshAssignedCounts();
   syncPairingsToExperimentDh();
@@ -439,6 +489,16 @@ function unpairSelectedRuns() {
     banner("readsBanner", false, "Tick one or more paired rows to split them back into single-end runs.");
     return;
   }
+  unpairRows(picked);
+}
+
+function unpairAllRuns() {
+  const picked = RUN_ROWS.map((r, i) => (r.paired ? i : -1)).filter((i) => i >= 0);
+  if (!picked.length) { banner("readsBanner", false, "Nothing to unpair — no row is a pair."); return; }
+  unpairRows(picked);
+}
+
+function unpairRows(picked) {
   // Right to left, so the earlier indices stay valid as rows are expanded.
   picked.reverse().forEach((i) => {
     const row = RUN_ROWS[i];
