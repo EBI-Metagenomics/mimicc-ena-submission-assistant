@@ -414,6 +414,14 @@ function pairedRow(a, b, f1, f2) {
 // the two mates, group 2 is the mate number (1 or 2).
 const DEFAULT_PAIR_REGEX = "^(.*)_([12])\\.f(?:ast)?q(?:\\.gz)?$";
 
+// The box starts at the default so it can be edited, and the reset button puts
+// it back; an emptied box still falls back to the default on Auto-pair.
+function resetPairRegex() {
+  const box = $("pairRegex");
+  if (box) box.value = DEFAULT_PAIR_REGEX;
+}
+resetPairRegex();
+
 function autoPairRuns() {
   const source = ($("pairRegex").value || "").trim() || DEFAULT_PAIR_REGEX;
   let re;

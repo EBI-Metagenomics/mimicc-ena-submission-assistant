@@ -518,6 +518,19 @@ def test_reads_auto_pair_merges_every_mate_pair_by_the_default_pattern(page):
     assert page.locator("#runTable tbody tr").count() == 3
 
 
+def test_reads_auto_pair_pattern_starts_at_the_default_and_resets(page):
+    """The box is prefilled so the default can be edited rather than retyped,
+    and the reset button puts it back."""
+    page.click("a.vf-tabs__link:has-text('Reads')")
+    default = page.input_value("#pairRegex")
+    assert default == page.evaluate("() => DEFAULT_PAIR_REGEX")
+    assert default.endswith("_([12])\\.f(?:ast)?q(?:\\.gz)?$")
+
+    page.fill("#pairRegex", "^(.*)_R([12])$")
+    page.click("#pairRegexResetBtn")
+    assert page.input_value("#pairRegex") == default
+
+
 def test_reads_auto_pair_uses_the_regex_the_user_typed(page):
     """Filenames the default misses are the whole point of the box: the pattern
     says which part is the shared stem and which is the mate number."""
