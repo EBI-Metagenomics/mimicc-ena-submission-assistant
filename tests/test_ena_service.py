@@ -183,3 +183,59 @@ def test_submit_studies_reports_local_xsd_validation_failure(monkeypatch):
     assert "ERROR:   ERROR: PROJECT 'study-a' missing TITLE" not in result["logs"]
     assert "ERROR: PROJECT 'study-a' missing TITLE" in result["logs"]
     assert "ERROR: Study XML failed local XSD validation; it was not submitted to ENA." in result["logs"]
+
+
+class _ActionRecords:
+    """``records.record_action`` returning a canned receipt result."""
+
+    def __init__(self, success, messages):
+        self.result = {"accession": "ERX1", "action": "cancel", "success": success, "messages": messages}
+
+    def record_action(self, *_args, **_kwargs):
+        return self.result
+
+
+def _run_cancel(monkeypatch, success, messages):
+    # The credentials are passed straight through to the stub, so any object does.
+    creds = types.SimpleNamespace(username="Webin-test", password="secret")
+    monkeypatch.setattr(ena_service, "_records", lambda: _ActionRecords(success, messages))
+    return ena_service.run_action(creds, "cancel", "ERX1", test=False)
+
+
+def test_cancel_reported_applied_when_ena_only_sent_info_lines(monkeypatch):
+    """ENA's CANCEL receipt says success="false" while its INFO lines say the
+    objects were cancelled. Believing the flag leaves the page showing the old
+    status and the user retrying an action that already worked."""
+    result = _run_cancel(
+        monkeypatch,
+        False,
+        [
+            'INFO: EXPERIMENT accession "ERX17126444" is set to cancelled status.',
+            'INFO: RUN accession "ERR17735909" is set to cancelled status.',
+        ],
+    )
+
+    assert result["success"] is True
+    assert result["receipt_success"] is False
+    assert "ERR17735909" in result["messages"]
+
+
+def test_action_failure_with_an_error_stays_a_failure(monkeypatch):
+    result = _run_cancel(monkeypatch, False, ["ERROR: The object being cancelled is public."])
+    assert result["success"] is False
+    assert result["receipt_success"] is False
+
+
+def test_action_failure_with_only_a_warning_stays_a_failure(monkeypatch):
+    """A warning is not a confirmation: only all-INFO overrides the flag."""
+    result = _run_cancel(monkeypatch, False, ["WARNING: Nothing was done."])
+    assert result["success"] is False
+
+
+def test_action_failure_with_no_messages_stays_a_failure(monkeypatch):
+    assert _run_cancel(monkeypatch, False, [])["success"] is False
+
+
+def test_action_success_is_left_alone(monkeypatch):
+    result = _run_cancel(monkeypatch, True, ["INFO: released"])
+    assert (result["success"], result["receipt_success"]) == (True, True)

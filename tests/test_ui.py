@@ -738,6 +738,38 @@ def test_records_row_action_posts_accession(page):
     assert posted[0]["kwargs"]["accession"] == "ERS111"
 
 
+def test_records_cancel_with_only_info_lines_reads_as_applied(page):
+    """ENA's CANCEL receipt carries success="false" with the outcome in its INFO
+    lines; ena_service takes that as applied, so the page must show it as
+    accepted, re-fetch the status, and note the disagreement in the log."""
+    page.evaluate("() => { CREDS = { username: 'Webin-test', password: 'secret' }; }")
+    _stub_py(
+        page,
+        {
+            "ena_service.run_action": {
+                "success": True,
+                "receipt_success": False,
+                "messages": 'INFO: EXPERIMENT accession "ERX1" is set to cancelled status.',
+            }
+        },
+    )
+    page.click("a.vf-tabs__link:has-text('Records')")
+    _enable_write(page)
+    _fetch_records(page, "samples")
+
+    page.locator("ena-browser#recGrid .ht_clone_inline_start button:has-text('Cancel')").first.click()
+    page.wait_for_timeout(300)
+
+    assert "cancel ERS111: ok" in page.inner_text("#recLog")
+    # Taken as applied, so the records are re-fetched — the status column is how
+    # the user sees it worked, and its banner replaces the action's.
+    assert len(_py_calls(page, "ena_service.list_records")) == 2
+    entry = page.locator("#recSubmitLog .entry").first
+    assert "accepted" in entry.inner_text()
+    assert "receipt flag said failure" in entry.inner_text()
+    assert "entry ok" in entry.get_attribute("class")
+
+
 def _edit_title(page, current, text):
     """Type into a grid cell — also the regression test for the narrowed
     keyboard swallower (core.js): without it Handsontable gets no keys at all."""
