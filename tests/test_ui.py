@@ -403,13 +403,166 @@ def test_reads_sample_assignment_and_row_delete(page):
     page.wait_for_function("() => SELECTED_SAMPLE === 'ERS111'")
 
     page.click("#runTable tbody tr:first-child td.wrap")
-    first_sample = page.locator("#runTable tbody tr").nth(0).locator("input").nth(1)
+    first_sample = page.locator("#runTable tbody tr").nth(0).locator("input[data-col='SAMPLE']")
     assert first_sample.input_value() == "ERS111"
     assert _assigned_count(page, "ERS111") == "2"
 
     page.click("#runTable tbody tr:first-child .icon-btn")
     assert page.locator("#runTable tbody tr").count() == 1
     assert _assigned_count(page, "ERS111") == "0"
+
+
+_SCANNED_SINGLES = """() => {
+    RUN_ROWS = [
+        { NAME: "lane1A1_1_sequence", files: ["lane1A1_1_sequence.fq.gz"], paired: false,
+          FASTQ1: "", FASTQ2: "", FASTQ: "lane1A1_1_sequence.fq.gz",
+          SAMPLE: "ERS111", STUDY: "ERP1", confidence: "none" },
+        { NAME: "lane1A1_2_sequence", files: ["lane1A1_2_sequence.fq.gz"], paired: false,
+          FASTQ1: "", FASTQ2: "", FASTQ: "lane1A1_2_sequence.fq.gz",
+          SAMPLE: "ERS111", STUDY: "ERP1", confidence: "none" }
+    ];
+    renderRunTable();
+}"""
+
+
+def _import_pairings(page, tmp_path, text):
+    tsv = tmp_path / "read-sample-pairings.tsv"
+    tsv.write_text(text)
+    page.set_input_files("#pairingsTsvFile", str(tsv))
+    page.wait_for_function("() => !document.getElementById('pairingsTsvFile').value")
+
+
+def test_reads_pair_selected_merges_two_rows_into_one_paired_run(page):
+    """Pairing is a decision the user makes in the table, not something inferred
+    from filenames: ticking two single-end rows must yield ONE paired run with
+    both mates on it, whatever the files are called."""
+    page.click("a.vf-tabs__link:has-text('Reads')")
+    page.evaluate(_SCANNED_SINGLES)
+    assert page.locator("#runTable tbody tr").count() == 2
+
+    page.locator("#runTable tbody input.pair-pick").nth(0).check()
+    page.locator("#runTable tbody input.pair-pick").nth(1).check()
+    page.click("#pairSelectedBtn")
+
+    assert page.evaluate("() => RUN_ROWS.length") == 1
+    assert page.evaluate("() => RUN_ROWS[0].paired") is True
+    # The run name is what the two mates agreed on, with the mate token gone.
+    assert page.evaluate("() => RUN_ROWS[0].NAME") == "lane1A1"
+    assert page.evaluate("() => [RUN_ROWS[0].FASTQ1, RUN_ROWS[0].FASTQ2]") == [
+        "lane1A1_1_sequence.fq.gz",
+        "lane1A1_2_sequence.fq.gz",
+    ]
+    assert page.evaluate("() => RUN_ROWS[0].FASTQ") == ""
+    assert page.evaluate("() => RUN_ROWS[0].SAMPLE") == "ERS111"
+    assert page.locator("#runTable tbody tr").count() == 1
+    assert "paired" in page.inner_text("#runTable tbody tr:first-child")
+    # One paired run is two files against the sample, not two runs.
+    assert page.evaluate("() => sampleAssignmentCount('ERS111')") == 2
+
+
+def test_reads_pair_selected_refuses_anything_but_two_rows(page):
+    page.click("a.vf-tabs__link:has-text('Reads')")
+    page.evaluate(_SCANNED_SINGLES)
+    page.locator("#runTable tbody input.pair-pick").nth(0).check()
+    page.click("#pairSelectedBtn")
+    assert page.evaluate("() => RUN_ROWS.length") == 2
+    assert "exactly two rows" in page.inner_text("#readsBanner")
+
+
+def test_reads_unpair_splits_a_paired_run_back(page):
+    page.click("a.vf-tabs__link:has-text('Reads')")
+    page.evaluate(
+        """() => {
+            RUN_ROWS = [{
+                NAME: "runA", files: ["runA_R1.fastq.gz", "runA_R2.fastq.gz"], paired: true,
+                FASTQ1: "runA_R1.fastq.gz", FASTQ2: "runA_R2.fastq.gz", FASTQ: "",
+                SAMPLE: "ERS111", STUDY: "ERP1", confidence: "none"
+            }];
+            renderRunTable();
+        }"""
+    )
+    page.locator("#runTable tbody input.pair-pick").nth(0).check()
+    page.click("#unpairSelectedBtn")
+
+    assert page.evaluate("() => RUN_ROWS.map(r => [r.NAME, r.paired, r.FASTQ])") == [
+        ["runA_1", False, "runA_R1.fastq.gz"],
+        ["runA_2", False, "runA_R2.fastq.gz"],
+    ]
+    assert page.evaluate("() => RUN_ROWS.every(r => r.SAMPLE === 'ERS111')") is True
+
+
+def test_reads_pairings_tsv_import_is_authoritative(page, tmp_path):
+    """An imported TSV is the pairing table, not a patch on the last scan: one
+    row is one run, so a TSV pairing two mis-scanned single-end rows into one
+    paired run must leave exactly that run — not the pair plus its leftovers."""
+    page.click("a.vf-tabs__link:has-text('Reads')")
+    page.evaluate(_SCANNED_SINGLES)
+    assert page.locator("#runTable tbody tr").count() == 2
+
+    _import_pairings(
+        page,
+        tmp_path,
+        "NAME\tSAMPLE\tSTUDY\tpaired\tFASTQ1\tFASTQ2\tFASTQ\n"
+        "lane1A1\tERS111\tERP1\ttrue\tlane1A1_1_sequence.fq.gz\tlane1A1_2_sequence.fq.gz\t\n",
+    )
+
+    assert page.evaluate("() => RUN_ROWS.map(r => r.NAME)") == ["lane1A1"]
+    assert page.evaluate("() => RUN_ROWS[0].paired") is True
+    assert page.evaluate("() => RUN_ROWS[0].files") == [
+        "lane1A1_1_sequence.fq.gz",
+        "lane1A1_2_sequence.fq.gz",
+    ]
+    assert page.locator("#runTable tbody tr").count() == 1
+
+
+def test_reads_pairings_tsv_layout_comes_from_the_file_columns(page, tmp_path):
+    """Spreadsheets rewrite booleans and hand-written TSVs omit the column, so
+    the FASTQ columns decide the layout. Two rows sharing a SAMPLE stay two
+    single-end runs — sharing a sample is not being mates."""
+    page.click("a.vf-tabs__link:has-text('Reads')")
+    page.evaluate(_SCANNED_SINGLES)
+
+    _import_pairings(
+        page,
+        tmp_path,
+        "NAME\tSAMPLE\tSTUDY\tFASTQ1\tFASTQ2\tFASTQ\n"
+        # No `paired` column at all, but both mates given: still paired.
+        "pairedRun\tERS111\tERP1\tp_R1.fq.gz\tp_R2.fq.gz\t\n"
+        # Same SAMPLE as each other, one file each: two single-end runs.
+        "soloA\tERS222\tERP1\t\t\ta.fq.gz\n"
+        "soloB\tERS222\tERP1\t\t\tb.fq.gz\n",
+    )
+
+    assert page.evaluate("() => RUN_ROWS.map(r => [r.NAME, r.paired])") == [
+        ["pairedRun", True],
+        ["soloA", False],
+        ["soloB", False],
+    ]
+    assert page.evaluate("() => RUN_ROWS[1].FASTQ") == "a.fq.gz"
+    # Two single-end runs of one sample count as two assigned files, not one run.
+    assert page.evaluate("() => sampleAssignmentCount('ERS222')") == 2
+
+
+def test_reads_pairings_tsv_without_file_columns_keeps_the_layout(page, tmp_path):
+    """A sample-assignment-only TSV must not silently demote a paired run to
+    single-end just because it carries no FASTQ columns."""
+    page.click("a.vf-tabs__link:has-text('Reads')")
+    page.evaluate(
+        """() => {
+            RUN_ROWS = [{
+                NAME: "runA", files: ["runA_R1.fastq.gz", "runA_R2.fastq.gz"], paired: true,
+                FASTQ1: "runA_R1.fastq.gz", FASTQ2: "runA_R2.fastq.gz", FASTQ: "",
+                SAMPLE: "", STUDY: "", confidence: "none"
+            }];
+            renderRunTable();
+        }"""
+    )
+
+    _import_pairings(page, tmp_path, "NAME\tSAMPLE\tSTUDY\nrunA\tERS111\tERP1\n")
+
+    assert page.evaluate("() => RUN_ROWS[0].paired") is True
+    assert page.evaluate("() => RUN_ROWS[0].FASTQ2") == "runA_R2.fastq.gz"
+    assert page.evaluate("() => RUN_ROWS[0].SAMPLE") == "ERS111"
 
 
 def test_reads_pairing_selection_survives_a_filter(page):

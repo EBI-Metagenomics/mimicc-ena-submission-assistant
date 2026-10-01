@@ -20,7 +20,7 @@ we do not import, to avoid its mgnify-toolkit/JAR dependency).
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Container, Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
@@ -28,8 +28,12 @@ from typing import Any, Final
 # Recognised read-file extensions (lower-cased).
 _READ_SUFFIXES: Final = (".fastq.gz", ".fq.gz", ".fastq", ".fq", ".bam", ".cram")
 
-# Mate tokens for paired-end grouping, tried in order.
-_MATE_RE: Final = re.compile(r"(.+?)[._](?:R)?([12])$")
+# A mate token anywhere in the name: ``_1``, ``_R2``, ``.read1``, delimited on
+# both sides. Deliberately loose — which match is the real mate token is decided
+# by whether the other mate's file exists, not by the token's position, so the
+# many conventions that bury it mid-name all work: ``_R1_001.fastq.gz``
+# (bcl2fastq), ``_1_sequence.fq.gz`` (Illumina export), ``_1.fastq.gz``.
+_MATE_RE: Final = re.compile(r"[._](?:[Rr]ead|[Rr])?([12])(?=[._]|$)")
 
 _REQUIRED_FIELDS: Final = (
     "STUDY",
@@ -57,12 +61,26 @@ def _read_suffix(name: str) -> str | None:
     return None
 
 
-def _stem_and_mate(name: str, suffix: str) -> tuple[str, str | None]:
-    """Return (group_stem, mate) for a read filename; mate is '1', '2' or None."""
+def _stem_and_mate(name: str, suffix: str, names: Container[str] = ()) -> tuple[str, str | None]:
+    """Return (group_stem, mate) for a read filename; mate is '1', '2' or None.
+
+    ``names`` is the full set of filenames being grouped. A mate token only
+    counts if flipping its digit names a file that is actually there, which is
+    what lets the token sit anywhere in the name (``_1_sequence.fq.gz``) without
+    this having to know every vendor's suffix. Rightmost candidate wins, so
+    ``lane1A1_1_sequence`` splits at ``_1_`` and not inside ``lane1A1``. With no
+    partner present (half a pair, or a stray digit in a single-end name) the
+    rightmost token still sets the mate, but the group stays unpaired.
+    """
     base = name[: -len(suffix)]
-    m = _MATE_RE.match(base)
-    if m:
-        return m.group(1), m.group(2)
+    matches = list(_MATE_RE.finditer(base))
+    for m in reversed(matches):
+        other = "2" if m.group(1) == "1" else "1"
+        if name[: m.start(1)] + other + name[m.end(1) :] in names:
+            return base[: m.start()], m.group(1)
+    if matches:
+        m = matches[-1]
+        return base[: m.start()], m.group(1)
     return base, None
 
 
@@ -79,12 +97,14 @@ def group_files(names: Iterable[str]) -> list[dict[str, Any]]:
         {"group": <stem>, "paired": bool, "files": [<basename>, ...],
          "files_by_mate": {"1": ..., "2": ...} | {}}
     """
+    names = list(names)
+    present = set(names)
     groups: dict[str, dict[str, Any]] = {}
     for name in names:
         suffix = _read_suffix(name)
         if suffix is None:
             continue
-        stem, mate = _stem_and_mate(name, suffix)
+        stem, mate = _stem_and_mate(name, suffix, present)
         group = groups.setdefault(stem, {"group": stem, "files": [], "files_by_mate": {}})
         group["files"].append(name)
         if mate:

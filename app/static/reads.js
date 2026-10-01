@@ -101,6 +101,16 @@ function blankRun(group) {
 // Columns: NAME, SAMPLE, STUDY, paired, FASTQ1, FASTQ2, FASTQ — a full
 // round-trip of a pairing row (not just the assignment decision), so import
 // works standalone without a prior Scan too.
+//
+// ONE ROW IS ONE RUN, and that is how the user says what a pair is, with no
+// reference to filenames: FASTQ1+FASTQ2 on a single row is one paired run;
+// two rows each carrying FASTQ, with the same SAMPLE, are two single-end runs
+// of that sample. Sharing a sample is therefore not the same as being mates,
+// which filename-based detection alone cannot express.
+//
+// An imported TSV is authoritative: it REPLACES the pairing table rather than
+// patching the last scan, because a scan that mis-paired is exactly what the
+// user is overriding, and leaving its leftover rows behind would submit them.
 // ---------------------------------------------------------------------------
 const PAIRING_TSV_COLS = ["NAME", "SAMPLE", "STUDY", "paired", "FASTQ1", "FASTQ2", "FASTQ"];
 
@@ -137,39 +147,58 @@ function parsePairingsTsv(text) {
   });
 }
 
+/** Turn one TSV row into a pairing row. The layout is read off the FILE
+ *  columns, not the `paired` cell: FASTQ1+FASTQ2 means paired, FASTQ alone
+ *  means single-end. Spreadsheets rewrite booleans (TRUE, 1, yes, a localised
+ *  word) and a hand-written TSV may omit the column entirely, so the flag is
+ *  only consulted to break a tie no file column settles. A row carrying no
+ *  file columns at all is an assignment-only edit and keeps `previous`'s
+ *  layout, instead of silently demoting a pair to single-end. */
+function pairingRowFromTsv(row, previous) {
+  const cell = (v) => String(v ?? "").trim();
+  const f1 = cell(row.FASTQ1), f2 = cell(row.FASTQ2), f = cell(row.FASTQ);
+  const flag = /^(true|t|yes|y|1|paired)$/i.test(cell(row.paired));
+  const common = {
+    NAME: cell(row.NAME), SAMPLE: cell(row.SAMPLE), STUDY: cell(row.STUDY),
+    confidence: "manual", suggested_alias: "", reupload: !!previous?.reupload,
+  };
+  if (!f1 && !f2 && !f) {
+    return {
+      ...common, paired: !!previous?.paired,
+      FASTQ1: previous?.FASTQ1 || "", FASTQ2: previous?.FASTQ2 || "", FASTQ: previous?.FASTQ || "",
+      files: previous?.files || [],
+    };
+  }
+  const paired = f1 && f2 ? true : f ? false : flag;
+  return {
+    ...common, paired, FASTQ1: f1, FASTQ2: f2, FASTQ: f,
+    files: paired ? [f1, f2].filter(Boolean) : [f || f1].filter(Boolean),
+  };
+}
+
 function importPairingsTsv() {
   const f = $("pairingsTsvFile").files[0];
   if (!f) return;
   const reader = new FileReader();
   reader.onload = () => {
-    const imported = parsePairingsTsv(reader.result);
-    let updated = 0, added = 0;
-    imported.forEach((row) => {
-      const paired = String(row.paired).toLowerCase() === "true";
-      const existing = RUN_ROWS.find((r) => r.NAME === row.NAME);
-      const files = paired
-        ? [row.FASTQ1, row.FASTQ2].filter((v) => v)
-        : [row.FASTQ].filter((v) => v);
-      if (existing) {
-        Object.assign(existing, {
-          SAMPLE: row.SAMPLE || "", STUDY: row.STUDY || "",
-          paired, FASTQ1: row.FASTQ1 || "", FASTQ2: row.FASTQ2 || "", FASTQ: row.FASTQ || "",
-          files: files.length ? files : existing.files,
-        });
-        updated++;
-      } else {
-        RUN_ROWS.push({
-          NAME: row.NAME, files, paired,
-          FASTQ1: row.FASTQ1 || "", FASTQ2: row.FASTQ2 || "", FASTQ: row.FASTQ || "",
-          SAMPLE: row.SAMPLE || "", STUDY: row.STUDY || "", confidence: "manual", suggested_alias: "",
-        });
-        added++;
-      }
-    });
+    const imported = parsePairingsTsv(reader.result).filter((row) => String(row.NAME ?? "").trim());
+    if (!imported.length) {
+      banner("readsBanner", false, "No rows with a NAME in that TSV — nothing imported.");
+      $("pairingsTsvFile").value = "";
+      return;
+    }
+    const previous = new Map(RUN_ROWS.map((r) => [r.NAME, r]));
+    const rows = imported.map((row) => pairingRowFromTsv(row, previous.get(String(row.NAME).trim())));
+    const kept = rows.filter((r) => previous.has(r.NAME)).length;
+    const dropped = RUN_ROWS.length - kept;
+    RUN_ROWS = rows;
     renderRunTable();
     refreshAssignedCounts();
     syncPairingsToExperimentDh();
-    banner("readsBanner", true, `Imported ${imported.length} pairing(s) — ${updated} updated, ${added} added.`);
+    const pairs = rows.filter((r) => r.paired).length;
+    banner("readsBanner", true,
+      `Imported ${rows.length} run(s) — ${pairs} paired, ${rows.length - pairs} single-end` +
+      (dropped > 0 ? `; dropped ${dropped} row(s) the file doesn't list.` : "."));
     scheduleSave();
     $("pairingsTsvFile").value = "";
   };
@@ -338,6 +367,94 @@ $("pairSamples").addEventListener("ena-browser:selection-change", (e) => {
   renderRunTable();   // re-applies the .assignable affordance
 });
 
+// ---------------------------------------------------------------------------
+// Manual pairing
+// Filename-based detection (read_assign.group_files) is a guess, so the run
+// table is the authority: tick two single-end rows and they become one paired
+// run, whatever the files are called. This is the only way to express "these
+// two files are one run's mates" as distinct from "these two runs share a
+// sample" — assigning the same SAMPLE to both rows leaves two single-end runs,
+// which is what webin-cli then registers.
+// ---------------------------------------------------------------------------
+
+function selectedRunIndices() {
+  return [...document.querySelectorAll("#runTable tbody input.pair-pick:checked")]
+    .map((box) => Number(box.dataset.i))
+    .sort((a, b) => a - b);
+}
+
+/** The pair's run name: what the two mates' names agree on, minus any trailing
+ *  separator left by the mate token (``x_1_seq``/``x_2_seq`` -> ``x``). Falls
+ *  back to the first row's name when they share no prefix. */
+function commonRunName(a, b) {
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  return a.slice(0, i).replace(/[._\-\s]+$/, "") || a;
+}
+
+function readFileOf(row) {
+  return row.FASTQ || row.FASTQ1 || (row.files || [])[0] || "";
+}
+
+function pairSelectedRuns() {
+  const picked = selectedRunIndices();
+  if (picked.length !== 2) {
+    banner("readsBanner", false, "Tick exactly two rows — the two mates of one run — then press Pair.");
+    return;
+  }
+  const [i, j] = picked;
+  const [a, b] = [RUN_ROWS[i], RUN_ROWS[j]];
+  if (a.paired || b.paired) {
+    banner("readsBanner", false, "One of those rows is already a pair — Unpair it first.");
+    return;
+  }
+  const [f1, f2] = [readFileOf(a), readFileOf(b)];
+  if (!f1 || !f2) {
+    banner("readsBanner", false, "Both rows need a read file before they can be paired.");
+    return;
+  }
+  // Mates belong to one sample by definition; say so rather than silently
+  // dropping one of two different assignments.
+  const clash = a.SAMPLE && b.SAMPLE && a.SAMPLE !== b.SAMPLE;
+  RUN_ROWS.splice(j, 1);
+  RUN_ROWS[i] = {
+    NAME: commonRunName(a.NAME || "", b.NAME || ""),
+    paired: true, FASTQ1: f1, FASTQ2: f2, FASTQ: "", files: [f1, f2],
+    SAMPLE: a.SAMPLE || b.SAMPLE || "", STUDY: a.STUDY || b.STUDY || "",
+    confidence: "manual", suggested_alias: "",
+    reupload: !!(a.reupload || b.reupload),
+  };
+  renderRunTable();
+  refreshAssignedCounts();
+  syncPairingsToExperimentDh();
+  scheduleSave();
+  banner("readsBanner", !clash,
+    `Paired into "${RUN_ROWS[i].NAME}" (1: ${f1}, 2: ${f2}).` +
+    (clash ? ` Those rows had different samples — kept ${RUN_ROWS[i].SAMPLE}, check it.` : ""));
+}
+
+function unpairSelectedRuns() {
+  const picked = selectedRunIndices().filter((i) => RUN_ROWS[i].paired);
+  if (!picked.length) {
+    banner("readsBanner", false, "Tick one or more paired rows to split them back into single-end runs.");
+    return;
+  }
+  // Right to left, so the earlier indices stay valid as rows are expanded.
+  picked.reverse().forEach((i) => {
+    const row = RUN_ROWS[i];
+    const singles = [row.FASTQ1, row.FASTQ2].filter(Boolean).map((file, n) => ({
+      ...row, NAME: `${row.NAME}_${n + 1}`, paired: false,
+      FASTQ1: "", FASTQ2: "", FASTQ: file, files: [file], confidence: "manual",
+    }));
+    RUN_ROWS.splice(i, 1, ...singles);
+  });
+  renderRunTable();
+  refreshAssignedCounts();
+  syncPairingsToExperimentDh();
+  scheduleSave();
+  banner("readsBanner", true, `Unpaired ${picked.length} run(s).`);
+}
+
 /** Both scans end here: whoever found the read groups, they become run rows. */
 function applyScannedGroups(groups, message) {
   RUN_ROWS = groups.map(blankRun);
@@ -407,7 +524,8 @@ function renderRunTable() {
   const cols = ["NAME", "files", "SAMPLE", "STUDY"];
   const head = $("runTable").querySelector("thead");
   const body = $("runTable").querySelector("tbody");
-  head.innerHTML = "<tr><th></th>" + cols.map((c) => `<th>${c}</th>`).join("") + "<th>status</th><th>re-upload</th></tr>";
+  head.innerHTML = '<tr><th title="Tick two rows to pair them">pair</th><th></th>'
+    + cols.map((c) => `<th>${c}</th>`).join("") + "<th>status</th><th>re-upload</th></tr>";
   body.innerHTML = "";
   RUN_ROWS.forEach((row, i) => {
     const tr = document.createElement("tr");
@@ -421,6 +539,19 @@ function renderRunTable() {
       syncPairingsToExperimentDh();
       scheduleSave();
     };
+
+    // Pair/unpair picker. Separate from the row click (which assigns the
+    // selected sample) so the two never fight over one gesture.
+    const pickTd = document.createElement("td");
+    const pick = document.createElement("input");
+    pick.type = "checkbox";
+    pick.className = "pair-pick";
+    pick.style.width = "auto";
+    pick.dataset.i = String(i);
+    pick.title = "Select for Pair / Unpair";
+    pick.onclick = (e) => e.stopPropagation();
+    pickTd.appendChild(pick);
+    tr.appendChild(pickTd);
 
     const removeTd = document.createElement("td");
     const removeBtn = document.createElement("button");
@@ -442,9 +573,15 @@ function renderRunTable() {
       const td = document.createElement("td");
       if (c === "files") {
         td.className = "wrap";
-        td.innerHTML = row.files.join("<br>") + (row.confidence === "high" ? ' <span class="tag high">auto</span>' : "");
+        const listed = row.paired
+          ? [`1: ${row.FASTQ1 || "—"}`, `2: ${row.FASTQ2 || "—"}`]
+          : (row.FASTQ ? [row.FASTQ] : row.files);
+        td.innerHTML = `<span class="tag">${row.paired ? "paired" : "single"}</span> `
+          + listed.join("<br>")
+          + (row.confidence === "high" ? ' <span class="tag high">auto</span>' : "");
       } else {
         const inp = document.createElement("input");
+        inp.dataset.col = c;   // addressable by column, not by input position
         inp.value = row[c] || "";
         inp.oninput = (e) => {
           RUN_ROWS[i][c] = e.target.value;
@@ -480,7 +617,8 @@ function renderRunTable() {
     body.appendChild(tr);
   });
   const has = RUN_ROWS.length > 0;
-  ["readsSubmitBtn", "readsValidateBtn", "readsScriptBtn", "readsScriptValidateBtn"]
+  ["readsSubmitBtn", "readsValidateBtn", "readsScriptBtn", "readsScriptValidateBtn",
+   "pairSelectedBtn", "unpairSelectedBtn"]
     .forEach((id) => { if ($(id)) $(id).disabled = !has; });
   refreshAssignedCounts();
 }
