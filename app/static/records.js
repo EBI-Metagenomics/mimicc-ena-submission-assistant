@@ -79,6 +79,7 @@ function applyMode() {
     rowActions: write ? ROW_ACTIONS : [],
   });
   refreshSubmitButton();
+  refreshBulk();
   if (write && !canEdit()) {
     banner("recBanner", false, `Write mode — ${envLabel()}. ${recEntity()} cannot be edited here; row actions still apply.`);
   }
@@ -366,26 +367,32 @@ function pendingChanges() {
     .filter((entry) => Object.keys(entry.changes).length > 0);
 }
 
-function showDiff(entries) {
-  $("recDiffEnv").textContent =
-    `${entries.length} record(s) will be modified in ${envLabel()}.` +
-    (TEST ? "" : " This is the production service.");
-  const rows = entries.flatMap((entry) =>
-    Object.entries(entry.changes).map(
-      ([field, value]) =>
-        `<tr><td>${esc(entry.accession)}</td><td>${esc(field)}</td>` +
-        `<td class="muted">${esc(entry.before?.[field] ?? "")}</td><td>${esc(value)}</td></tr>`,
-    ),
-  );
+/** The modal confirmation, shared by MODIFY and the bulk lifecycle actions. */
+function confirmTable({ title, summary, head, rows, ok }) {
+  $("recDiffTitle").textContent = title;
+  $("recDiffEnv").textContent = summary + (TEST ? "" : " This is the production service.");
+  $("recDiffOk").textContent = ok;
   $("recDiffTable").innerHTML =
-    "<thead><tr><th>Accession</th><th>Field</th><th>Before</th><th>After</th></tr></thead><tbody>" +
-    rows.join("") +
+    `<thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>` +
+    rows.map((cells) => `<tr>${cells.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`).join("") +
     "</tbody>";
 
   const dialog = $("recDiffDialog");
   return new Promise((resolve) => {
     dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok"), { once: true });
     dialog.showModal();
+  });
+}
+
+function showDiff(entries) {
+  return confirmTable({
+    title: "Submit these changes to ENA?",
+    summary: `${entries.length} record(s) will be modified in ${envLabel()}.`,
+    head: ["Accession", "Field", "Before", "After"],
+    rows: entries.flatMap((entry) =>
+      Object.entries(entry.changes).map(([field, value]) => [entry.accession, field, entry.before?.[field] ?? "", value]),
+    ),
+    ok: "Submit",
   });
 }
 
@@ -423,10 +430,8 @@ $("recSubmit").onclick = async () => {
 };
 
 // --- Lifecycle actions ------------------------------------------------------
-async function recAction(action, accession) {
-  let hold = null;
-  if (action === "hold") { hold = prompt(`Hold ${accession} until (YYYY-MM-DD):`); if (!hold) return; }
-  if (action !== "release" && !confirm(`${action.toUpperCase()} ${accession} in ${envLabel()}?`)) return;
+/** Send one lifecycle action and log ENA's answer; true if it applied. */
+async function runAction(action, accession, hold) {
   appendLog("recLog", `${action} ${accession}…`);
   try {
     const r = await enaPy("ena_service.run_action", { action, accession, hold_until: hold });
@@ -445,13 +450,81 @@ async function recAction(action, accession) {
       lines,
     });
     banner("recBanner", r.success, `${action} ${accession}: ${r.success ? "ok" : "failed"} — ${detail}`);
-    // The status column is how the user sees it worked.
-    if (r.success) await loadRecords();
-    else scheduleSave();
+    return r.success;
   } catch (e) {
     appendLog("recLog", `ERROR: ${e.message}`);
     banner("recBanner", false, e.message);
+    return false;
   }
+}
+
+async function recAction(action, accession) {
+  let hold = null;
+  if (action === "hold") { hold = prompt(`Hold ${accession} until (YYYY-MM-DD):`); if (!hold) return; }
+  if (action !== "release" && !confirm(`${action.toUpperCase()} ${accession} in ${envLabel()}?`)) return;
+  // The status column is how the user sees it worked.
+  if (await runAction(action, accession, hold)) await loadRecords();
+  else scheduleSave();
+}
+
+// --- Bulk lifecycle actions -------------------------------------------------
+// The same actions as the row buttons, over the grid's selection. What each
+// one leaves the record as, for the confirmation's "from → to".
+const ACTION_STATUS = { release: "PUBLIC", hold: "PRIVATE", suppress: "SUPPRESSED", cancel: "CANCELLED" };
+
+function selectedRows() {
+  const keys = new Set(recGrid().getSelection());
+  return recGrid().getRows().filter((row) => keys.has(rowKey(row)));
+}
+
+/** The grid's row key: first non-empty of accession, secondary, alias. */
+function rowKey(row) {
+  for (const field of ["accession", "secondary_accession", "alias"]) {
+    if (row[field] !== undefined && row[field] !== null && row[field] !== "") return String(row[field]);
+  }
+  return "";
+}
+
+function refreshBulk() {
+  const write = $("recWrite").checked;
+  const count = write ? recGrid().getSelection().length : 0;
+  $("recBulk").style.display = write ? "" : "none";
+  $("recBulkCount").textContent = `${count} selected`;
+  for (const button of document.querySelectorAll("#recBulk [data-bulk]")) button.disabled = count === 0;
+}
+
+async function bulkAction(action) {
+  const rows = selectedRows();
+  if (!rows.length) return;
+  let hold = null;
+  if (action === "hold") { hold = prompt(`Hold ${rows.length} record(s) until (YYYY-MM-DD):`); if (!hold) return; }
+  const to = ACTION_STATUS[action] + (hold ? ` until ${hold}` : "");
+  const tally = new Map();
+  for (const row of rows) {
+    const from = String(row.status || "unknown").toUpperCase();
+    tally.set(from, (tally.get(from) || 0) + 1);
+  }
+  const ok = await confirmTable({
+    title: `${action.toUpperCase()} ${rows.length} ${recEntity()} in ENA?`,
+    summary:
+      `${rows.length} record(s) will change in ${envLabel()}: ` +
+      [...tally].map(([from, n]) => `${n} ${from} → ${to}`).join(", ") + ".",
+    head: ["Accession", "Alias", "Current status", "New status"],
+    rows: rows.map((row) => [rowKey(row), row.alias || "", String(row.status || "unknown").toUpperCase(), to]),
+    ok: `${action[0].toUpperCase()}${action.slice(1)} ${rows.length}`,
+  });
+  if (!ok) return;
+  // ponytail: sequential, one request per record; batch in the toolkit if
+  // selections get into the hundreds.
+  let applied = 0;
+  for (const row of rows) if (await runAction(action, rowKey(row), hold)) applied++;
+  if (applied) await loadRecords();
+  else scheduleSave();
+  banner("recBanner", applied === rows.length, `${action}: ${applied} of ${rows.length} applied. See the submission log below.`);
+}
+
+for (const button of document.querySelectorAll("#recBulk [data-bulk]")) {
+  button.onclick = () => bulkAction(button.dataset.bulk);
 }
 
 // --- Element events ---------------------------------------------------------
@@ -459,6 +532,7 @@ recGrid().addEventListener("ena-browser:row-action", (e) =>
   recAction(e.detail.action, e.detail.row?.accession || e.detail.key),
 );
 recGrid().addEventListener("ena-browser:change", () => refreshSubmitButton());
+recGrid().addEventListener("ena-browser:selection-change", () => refreshBulk());
 recGrid().addEventListener("ena-browser:error", (e) => banner("recBanner", false, e.detail.message));
 for (const name of ["filter-change", "layout-change"]) {
   recGrid().addEventListener(`ena-browser:${name}`, (e) => {
