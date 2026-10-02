@@ -602,6 +602,13 @@
         <span class="muted" id="recCount"></span>
       </div>
       <div class="vf-banner vf-banner--alert" style="display:none" id="recBanner"></div>
+      <div class="actions" id="recBulk" style="display:none">
+        <span class="muted" id="recBulkCount">0 selected</span>
+        <button class="vf-button vf-button--secondary" type="button" data-bulk="release">Release selected</button>
+        <button class="vf-button vf-button--secondary" type="button" data-bulk="hold">Hold selected</button>
+        <button class="vf-button vf-button--secondary" type="button" data-bulk="suppress">Suppress selected</button>
+        <button class="vf-button vf-button--secondary" type="button" data-bulk="cancel">Cancel selected</button>
+      </div>
       <ena-browser id="recGrid" entity="studies" mode="read" height="600"></ena-browser>
     </div>
 
@@ -648,12 +655,12 @@
 </main>
 <dialog id="recDiffDialog">
   <form method="dialog">
-    <h3 style="margin-top:0">Submit these changes to ENA?</h3>
+    <h3 style="margin-top:0" id="recDiffTitle">Submit these changes to ENA?</h3>
     <p id="recDiffEnv" class="muted"></p>
     <div class="scroll" style="max-height:50vh"><table id="recDiffTable"></table></div>
     <div class="actions" style="justify-content:flex-end">
       <button class="vf-button vf-button--secondary" value="cancel">Cancel</button>
-      <button class="vf-button vf-button--primary" value="ok">Submit</button>
+      <button class="vf-button vf-button--primary" value="ok" id="recDiffOk">Submit</button>
     </div>
   </form>
 </dialog>

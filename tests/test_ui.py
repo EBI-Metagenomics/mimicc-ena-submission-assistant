@@ -772,6 +772,55 @@ def test_records_cancel_with_only_info_lines_reads_as_applied(page):
     assert "entry ok" in entry.get_attribute("class")
 
 
+def test_records_bulk_action_confirms_and_runs_over_the_selection(page):
+    """The bulk buttons only exist in write mode, act on the grid's selection,
+    and confirm with the count and the from → to status first."""
+    page.evaluate("() => { CREDS = { username: 'Webin-test', password: 'secret' }; }")
+    _stub_py(page, {"ena_service.run_action": {"success": True, "messages": "cancelled"}})
+    page.click("a.vf-tabs__link:has-text('Records')")
+    _fetch_records(page, "samples")
+    assert not page.is_visible("#recBulk"), "bulk actions must be hidden outside write mode"
+
+    _enable_write(page)
+    page.wait_for_function("() => document.getElementById('recGrid').getRows().length > 0")
+    assert page.is_visible("#recBulk")
+    assert page.is_disabled("#recBulk [data-bulk='cancel']"), "nothing selected yet"
+
+    page.evaluate("() => document.getElementById('recGrid').setSelection(['ERS111', 'ERS222'])")
+    page.wait_for_function("() => !document.querySelector(\"#recBulk [data-bulk='cancel']\").disabled")
+    assert "2 selected" in page.inner_text("#recBulkCount")
+
+    page.click("#recBulk [data-bulk='cancel']")
+    page.wait_for_selector("#recDiffDialog[open]")
+    summary = page.inner_text("#recDiffEnv")
+    assert "2 record(s) will change" in summary
+    assert "2 PRIVATE → CANCELLED" in summary
+    assert "ERS222" in page.inner_text("#recDiffTable")
+    page.click("#recDiffOk")
+    page.wait_for_function("() => window.__pyCalls.filter((c) => c.target === 'ena_service.run_action').length === 2")
+
+    posted = _py_calls(page, "ena_service.run_action")
+    assert [c["kwargs"]["action"] for c in posted] == ["cancel", "cancel"]
+    assert sorted(c["kwargs"]["accession"] for c in posted) == ["ERS111", "ERS222"]
+
+
+def test_records_bulk_action_dismissed_sends_nothing(page):
+    page.evaluate("() => { CREDS = { username: 'Webin-test', password: 'secret' }; }")
+    _stub_py(page, {"ena_service.run_action": {"success": True, "messages": "released"}})
+    page.click("a.vf-tabs__link:has-text('Records')")
+    _enable_write(page)
+    _fetch_records(page, "studies")
+    page.evaluate("() => document.getElementById('recGrid').setSelection(['ERP111'])")
+    page.wait_for_function("() => !document.querySelector(\"#recBulk [data-bulk='release']\").disabled")
+
+    page.click("#recBulk [data-bulk='release']")
+    page.wait_for_selector("#recDiffDialog[open]")
+    assert "1 PRIVATE → PUBLIC" in page.inner_text("#recDiffEnv")
+    page.click("#recDiffDialog button[value='cancel']")
+    page.wait_for_timeout(200)
+    assert _py_calls(page, "ena_service.run_action") == []
+
+
 def _edit_title(page, current, text):
     """Type into a grid cell — also the regression test for the narrowed
     keyboard swallower (core.js): without it Handsontable gets no keys at all."""
