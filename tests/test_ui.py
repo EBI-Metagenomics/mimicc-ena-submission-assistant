@@ -1641,6 +1641,47 @@ def test_saving_a_schema_makes_it_available_in_every_schema_picker(page):
     assert 'Saved as "immediate-schema".' in page.inner_text("#schemaEditorBanner")
 
 
+@pytest.mark.parametrize(("role", "select_id", "folder"), _GRIDS)
+def test_saving_over_a_schema_a_grid_uses_recompiles_that_grid(page, role, select_id, folder):
+    _prepare_grid_selection(page, role, folder, marker="before edit")
+    page.evaluate("([role]) => selectSchemaById(role, 'mimicc_sample')", [role])
+    edited = "name: mimicc_sample\nid: https://example.org/mimicc_sample\nclasses: {}\n"
+    _stub_py(
+        page,
+        {
+            "schema_service.describe_schema": {
+                "id": "mimicc_sample",
+                "name": "mimicc_sample",
+                "title": "mimicc_sample",
+            },
+            "schema_service.compile_for_grid": _compiled(role, folder, "after edit"),
+        },
+    )
+    page.evaluate(
+        "async (yaml) => { $('schemaSaveName').value = 'mimicc_sample'; await saveExportedSchema(yaml); }", edited
+    )
+
+    (call,) = _py_calls(page, "schema_service.compile_for_grid")
+    assert call["kwargs"] == {"role": role, "yaml_text": edited}
+    assert '"after edit"' in _served_schema(page, folder)["body"]
+    # Current again: a returning load recompiles nothing.
+    assert page.evaluate("async () => await restoreGridSchemas()") == []
+
+
+@pytest.mark.parametrize(("role", "select_id", "folder"), _GRIDS)
+def test_grid_schema_picker_shows_the_schema_the_grid_uses(page, role, select_id, folder):
+    _prepare_grid_selection(page, role, folder)
+    page.click("a.vf-tabs__link:has-text('Schema')")
+    page.click(f"#schemaLibraryList tr:has-text('erc000025') button:has-text('Use for {role}')")
+    page.wait_for_function("([role]) => $(_roleMeta(role).bannerId).textContent.includes('Switched')", arg=[role])
+    assert page.eval_on_selector(f"#{select_id}", "el => el.value") == "erc000025"
+
+    page.reload()
+    _wait_for_workspace(page)
+    page.wait_for_selector(f"#{select_id} option[value='erc000025']", state="attached")
+    assert page.eval_on_selector(f"#{select_id}", "el => el.value") == "erc000025"
+
+
 def test_building_a_schema_sends_sources_and_library_schemas_as_files(page):
     _stub_py(page, {"schema_service.import_build": "name: merged\n"})
     page.evaluate("() => { loadSchemaIntoEditor = (yaml) => { window.__editorYaml = yaml; }; }")

@@ -59,9 +59,8 @@ async function refreshSchemaList() {
     SCHEMA_LIST = [];
   }
   renderSchemaLibrary();
-  populateSchemaSelect("sampleSchemaSelect");
-  populateSchemaSelect("expSchemaSelect");
-  populateSchemaSelect("studySchemaSelect");
+  const inUse = await dbGetGridSchemas().catch(() => ({}));
+  for (const role of ["sample", "experiment", "study"]) populateSchemaSelect(_roleMeta(role).selectId, inUse[role]);
   populateSchemaMultiSelect("schemaImportExisting");
   return SCHEMA_LIST;
 }
@@ -70,12 +69,14 @@ function schemaOptionLabel(s) {
   return s.title && s.title !== s.id ? `${s.title} (${s.id})` : s.id;
 }
 
-function populateSchemaSelect(selectId) {
+/** Keep the user's pending pick; otherwise show the schema the grid uses. */
+function populateSchemaSelect(selectId, inUse) {
   const el = $(selectId);
   if (!el) return;
   const prev = el.value;
   el.innerHTML = SCHEMA_LIST.map((s) => `<option value="${esc(s.id)}">${esc(schemaOptionLabel(s))}</option>`).join("");
-  if (SCHEMA_LIST.some((s) => s.id === prev)) el.value = prev;
+  const keep = [prev, inUse].find((id) => id && SCHEMA_LIST.some((s) => s.id === id));
+  if (keep) el.value = keep;
 }
 
 function populateSchemaMultiSelect(selectId) {
@@ -97,6 +98,7 @@ function renderSchemaLibrary() {
         <button class="btn secondary" style="padding:3px 8px" onclick="editSchemaInLibrary('${id}')">Edit</button>
         <button class="btn secondary" style="padding:3px 8px" onclick="selectSchemaById('sample','${id}')">Use for sample</button>
         <button class="btn secondary" style="padding:3px 8px" onclick="selectSchemaById('experiment','${id}')">Use for experiment</button>
+        <button class="btn secondary" style="padding:3px 8px" onclick="selectSchemaById('study','${id}')">Use for study</button>
         <button class="btn secondary" style="padding:3px 8px" onclick="exportSchemaFromLibrary('${id}')">Export</button>
         <button class="btn danger" style="padding:3px 8px" onclick="deleteSchemaFromLibrary('${id}')">Delete</button>
       </td>
@@ -172,12 +174,13 @@ async function reloadDhGrid(role) {
   pointDhFrameAtTemplate(role, template);
   const ws = (await idbGet(WORKSPACE_ID)) || {};
   if (role === "sample") loadDhGridWhenReady(ws.dh_export_sample);
-  else if (role === "experiment") loadExpDhGridWhenReady(ws.dh_export_experiment);
+  else if (role === "experiment") { loadExpDhGridWhenReady(ws.dh_export_experiment); checkExpSchemaColumns(); }
   else loadStudyDhGridWhenReady(ws.dh_export_study);
 }
 
-/** On load: keep each grid's cached schema only if the workspace still selects
- *  it and today's compiler made it. Otherwise recompile it from the library,
+/** On load, and after a library save: keep each grid's cached schema only if
+ *  the workspace still selects it, today's compiler made it and it was made
+ *  from the library's current YAML. Otherwise recompile it from the library,
  *  or — its schema deleted, or the workspace cleared — drop it so the grid
  *  falls back to the built default. Only this rare path starts Python.
  *  Resolves to the roles it changed. */
@@ -187,17 +190,20 @@ async function restoreGridSchemas() {
     if (!(await templateWorkerReady())) return touched;
     const version = await compilerVersion();
     const selected = await dbGetGridSchemas();
-    const cached = {};
+    const cached = {}; // role -> { tags (schema.json's headers), yaml (the source it was compiled from) }
     const cache = await caches.open(TEMPLATE_CACHE);
     for (const request of await cache.keys()) {
       const response = await cache.match(request);
-      if (request.url.endsWith("/schema.json")) cached[response.headers.get("x-role")] = response.headers;
+      const entry = (cached[response.headers.get("x-role")] ||= {});
+      if (request.url.endsWith("/schema.json")) entry.tags = response.headers;
+      else entry.yaml = await response.text();
     }
     for (const role of new Set([...Object.keys(cached), ...Object.keys(selected)])) {
       const schemaId = selected[role];
-      const tags = cached[role];
-      if (tags && schemaId && tags.get("x-schema-id") === schemaId && tags.get("x-compiler-version") === version) continue;
+      const { tags, yaml } = cached[role] || {};
       const schema = schemaId && (await idbGet(schemaId, SCHEMA_STORE));
+      if (tags && schema && tags.get("x-schema-id") === schemaId && tags.get("x-compiler-version") === version
+          && yaml === schema.yaml) continue;
       try {
         if (schema) await installGridSchema(role, schema);
         else await dropGridSchema(role);
@@ -238,6 +244,7 @@ async function selectSchemaById(role, schemaId, bannerId) {
   const fallbackBanner = bannerId || _roleMeta(role).bannerId;
   try {
     const result = await installGridSchema(role, await readLibrarySchema(schemaId));
+    $(_roleMeta(role).selectId).value = schemaId;
     await dbSetGridSchema(role, schemaId);
     console.info("DataHarmonizer schema selection", result.template, result.diagnostics);
     const loadToken = pointDhFrameAtTemplate(role, result.template);
@@ -431,6 +438,8 @@ async function saveExportedSchema(yamlText) {
     // library entry.  This makes a just-created schema usable immediately,
     // even when the user switches tabs as soon as the save completes.
     await refreshSchemaList();
+    // Saving over a schema a grid uses recompiles that grid in place.
+    await restoreGridSchemas();
     banner("schemaEditorBanner", true, `Saved as "${id}".`);
   } catch (e) { banner("schemaEditorBanner", false, e.message); }
 }
